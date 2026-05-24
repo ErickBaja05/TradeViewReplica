@@ -37,7 +37,12 @@ sub new
 sub index_to_x
 {
     my ($self, $index) = @_;
-    # TODO
+    
+    my $normalized = ($index - $self->{x_min}) / ($self->{x_max} - $self->{x_min});
+
+    my $x = $normalized * $self->{width};
+
+    return $x;
 }
 
 # Convierte X → índice entero
@@ -66,7 +71,12 @@ sub index_to_center_x
 sub value_to_y
 {
     my ($self, $value) = @_;
-    # TODO
+    
+    my $normalized = ($value - $self->{y_min}) / ($self->{y_max} - $self->{y_min});
+
+    my $y = $normalized * $self->{height};
+
+    return $y;
 }
 
 # Convierte Y → valor
