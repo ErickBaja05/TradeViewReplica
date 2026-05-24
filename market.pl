@@ -5,8 +5,8 @@ use FindBin;
 use lib "$FindBin::Bin"; # Permite a Perl buscar los módulos locales en el directorio de ejecución
 
 use Tk;
-#use Market::MarketData;
-#use Market::IndicatorManager;
+use Market::MarketData;
+use Market::IndicatorManager;
 use Market::ChartEngine;
 
 # =========================================================================
@@ -43,23 +43,25 @@ my $chart_engine = Market::ChartEngine->new(
 
 # 3. Tareas secuenciales requeridas por el documento de requerimientos
 # Tarea A: Invoca la lectura de los datos (Día 1: Datos Mock/Simulados básicos)
-$market_data->add_candle({
+
+my $candle = {
     time   => '2026-04-01T00:00:00-05:00',
     open   => 24013.75,
     high   => 24013.75,
     low    => 24007.50,
     close  => 24009.25,
-    Volume => 67
-});
+    volume => 67
+};
+$market_data->add_candle($candle); # Agrega la vela al arreglo interno de velas (candles) en MarketData.pm
 
-# Tarea B: Invoca la actualización del mercado entre distintas temporalidades
-$market_data->build_timeframes();
+# # Tarea B: Invoca la actualización del mercado entre distintas temporalidades
+# $market_data->build_timeframes();
 
-# Tarea C: Invoca la actualización de los indicadores desacoplados
-$indicator_manager->update_last($market_data);
+# # Tarea C: Invoca la actualización de los indicadores desacoplados
+# $indicator_manager->update_last($market_data);
 
-# Tarea D: Dibuja el primer chart visual en pantalla
-$chart_engine->render();
+# # Tarea D: Dibuja el primer chart visual en pantalla
+# $chart_engine->render();
 
 
 # 4. Lanzamiento del ciclo principal de escucha de eventos de la interfaz
