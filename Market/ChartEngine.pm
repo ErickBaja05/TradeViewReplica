@@ -4,8 +4,8 @@ use strict;
 use warnings;
 
 # Importación de los paneles que el motor debe instanciar según el documento
-#use Market::Panels::PricePanel;
-#use Market::Panels::ATRPanel;
+use Market::Panels::PricePanel;
+use Market::Panels::ATRPanel;
 
 =head1 NOMBRE
 
@@ -93,8 +93,82 @@ sub round {
 # Los siguientes métodos están declarados vacíos para cumplir con la interfaz
 # del documento sin generar errores de llamadas en los módulos de tus compañeros.
 
-sub compute_window           { my ($self) = @_; return; }
-sub request_render           { my ($self) = @_; return; }
+=head2 compute_window
+
+Calcula qué porción de datos es visible en la pantalla.
+Utiliza las variables de estado visible_bars, zoom y offset para definir
+el rango exacto de índices (velas) que se deben renderizar [cite: 490-493].
+
+Retorna:
+  - Una lista con dos enteros: ($start_index, $end_index)
+=cut
+
+sub compute_window {
+    my ($self) = @_;
+
+    my $market_data = $self->{market_data};
+    my $total_candles = $market_data->size() || 0;
+
+    # Si aún no hay datos en el mercado, devolvemos un rango nulo (0, 0)
+    return (0, 0) if $total_candles == 0;
+
+    # El offset determina cuántas velas nos hemos movido hacia el pasado (izquierda).
+    # Si offset es 0, estamos viendo el extremo derecho (lo más reciente).
+    my $end_index = $total_candles - 1 - $self->{offset};
+
+    # El índice de inicio depende de la cantidad de barras visibles que permite el zoom actual
+    my $start_index = $end_index - $self->{visible_bars} + 1;
+
+    # --- Validaciones de Límites (Boundary Checks) ---
+    # Evitar índices negativos si el usuario hace scroll más allá del inicio de los datos
+    $start_index = 0 if $start_index < 0;
+    
+    # Si por el zoom el end_index queda en negativo, se ajusta a 0
+    $end_index = 0 if $end_index < 0;
+
+    # Evitar superar el límite derecho si el offset se vuelve negativo 
+    # (Tratar de ir al "futuro" donde no hay velas)
+    if ($end_index >= $total_candles) {
+        $end_index = $total_candles - 1;
+        $start_index = $end_index - $self->{visible_bars} + 1;
+        $start_index = 0 if $start_index < 0;
+    }
+
+    return ($start_index, $end_index);
+}
+
+=head2 request_render
+
+Solicita un render diferido. En lugar de dibujar inmediatamente, encola 
+la petición para evitar renderizados redundantes. Es la optimización clave
+para el rendimiento en Tk .
+
+Retorna:
+  - Nada.
+=cut
+
+sub request_render {
+    my ($self) = @_;
+
+    # Si ya hay una orden de dibujo en la cola, la ignoramos. 
+    # Esto garantiza complejidad O(1) en las peticiones.
+    return if $self->{render_pending};
+
+    # Levantamos la bandera (flag) indicando que un render está pendiente
+    $self->{render_pending} = 1;
+
+    # Obtenemos la referencia a la ventana principal de Tk para encolar el evento
+    if (my $mw = $self->{widgets}->{main_window}) {
+        # afterIdle ejecuta el bloque de código una vez que Tk termina de 
+        # procesar todos los eventos de mouse/teclado actuales.
+        $mw->afterIdle(sub {
+            # Bajamos la bandera y ejecutamos el render pesado
+            $self->{render_pending} = 0;
+            $self->render();
+        });
+    }
+}
+
 sub render                   { my ($self) = @_; return; }
 sub bind_all_canvas          { my ($self) = @_; return; }
 sub bind_events              { my ($self) = @_; return; }
@@ -106,6 +180,30 @@ sub _draw_crosshair_all      { my ($self) = @_; return; }
 sub set_timeframe            { my ($self, $tf) = @_; return; }
 sub reset_view               { my ($self) = @_; return; }
 sub compute_intraday_labels  { my ($self) = @_; return; }
-sub get_all_timestamps       { my ($self) = @_; return [()]; }
+
+=head2 get_all_timestamps
+
+Devuelve los timestamps únicamente de las velas que son visibles actualmente.
+Usado para etiquetar el eje temporal y sincronizar otros elementos.
+
+Retorna:
+  - Una referencia a un arreglo (\@timestamps) con las etiquetas de tiempo.
+=cut
+
+sub get_all_timestamps {
+    my ($self) = @_;
+
+    my ($start, $end) = $self->compute_window();
+    my $market_data = $self->{market_data};
+    my @timestamps;
+
+    # Recorremos solo la porción visible de datos y extraemos su fecha/hora
+    for my $i ($start .. $end) {
+        my $ts = $market_data->get_timestamp($i);
+        push @timestamps, $ts if defined $ts;
+    }
+
+    return \@timestamps;
+}
 
 1; # Retorno verdadero obligatorio para módulos en Perl
