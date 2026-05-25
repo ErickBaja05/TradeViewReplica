@@ -70,7 +70,7 @@ sub get_data {
    return $self->{candles};
 }
 
-=head3 add_candle()
+=head2 add_candle()
 
 Este método recibe un hash de una vela y lo agrega al arreglo dinámico.
 
@@ -100,6 +100,154 @@ sub add_candle {
       warn "[MarketData Error] El argumento provisto a add_candle no es un Hash válido.\n";
    }
    return $self;
+}
+
+
+=head2 _active_array()
+
+Retorna el arreglo de velas según la temporalidad activa
+
+=cut
+
+sub _active_array {
+   my ($self) = @_;
+   
+   # Recuperamos el identificador de la temporalidad activa
+   my $tf = $self->{timeframe} // '1m';
+   
+   # Si por alguna razón la estructura interna de esa TF no existe, la inicializamos
+   $self->{data}->{$tf} //= [];
+
+   # Para mantener compatibilidad con las pruebas iniciales de get_data, 
+   # si la temporalidad activa es '1m' y el almacenamiento local 'candles' 
+   # tiene datos pero 'timeframes->{1m}' está vacío, sincronizamos el contenido.
+   if ($tf eq '1m' && scalar @{$self->{data}->{'1m'}} == 0 && scalar @{$self->{candles}} > 0) {
+      $self->{data}->{'1m'} = $self->{candles};
+   }
+   return $self->{data}->{$tf};
+}
+
+=head2 get_candle()
+
+Recupera una vela del historial basándose en su posición
+
+=cut
+
+sub get_candle {
+   # Se recibe la posición de la vela
+   my ($self, $index) = @_;
+   
+   # Validamos que el índice sea un número definido y que esté dentro del rango existente
+   if (defined $index && $index >= 0 && $index <= $self->last_index()) {
+      my $array_ref = $self->_active_array();
+      return $array_ref->[$index];
+   }
+   return undef;
+}
+
+=head2 last_candle()
+
+Retorna el hash completo de la última vela registrada en el sistema bajo la temporalidad activa.
+
+=cut
+
+sub last_candle {
+   my ($self) = @_;
+   my $idx = $self->last_index();
+   return $self->get_candle($idx);
+}
+
+
+=head2 last_index()
+
+Obtiene el índice de la última vela del arreglo de la temporalidad activa.
+
+=cut
+
+sub last_index {
+   my ($self) = @_;
+   my $total_elements = $self->size();
+   return $total_elements - 1;
+}
+
+=head2 size()
+
+Devuelve la cantidad total de velas almacenadas en la temporalidad activa actual.
+
+=cut
+
+sub size {
+   my ($self) = @_;
+   my $array_ref = $self->_active_array();
+   return scalar @{$array_ref};
+}
+
+=head2 get_slice()
+
+Extrae una porción de datos entre dos índices delimitadores. 
+El motor de renderizado obtiene solo las velas de la ventana visible
+y para calcular indicadores sobre ventanas móviles.
+
+=cut
+
+sub get_slice {
+   # se recibe los índices de inicio y fin
+   my ($self, $start, $end) = @_;
+   my $max_idx = $self->last_index();
+   
+   # Validaciones de seguridad de fronteras e índices
+   return [] if $max_idx < 0; # Si no hay datos, retorna arreglo vacío
+   $start = 0 if !defined $start || $start < 0;
+   $end = $max_idx if !defined $end || $end > $max_idx;
+   
+   # Si los índices están cruzados de forma incorrecta, se retorna vacío
+   return [] if $start > $end;
+   
+   my $array_ref = $self->_active_array();
+   my @slice = @{$array_ref}[$start .. $end];
+   
+   return \@slice;
+}
+
+=head2 get_timestamp()
+
+Devuelve el valor de tiempo correspondiente a una vela en una posición determinada. 
+Es utilizado por el motor gráfico para renderizar las etiquetas dinámicas del eje horizontal X.
+
+=cut
+
+sub get_timestamp {
+   # se recibe la posición de la vela de la cual se requiere la marca temporal
+   my ($self, $index) = @_;
+   my $candle = $self->get_candle($index);
+   if (defined $candle && exists $candle->{time}) {
+      return $candle->{time};
+   }
+   return undef;
+}
+
+
+sub build_tf_candles {
+   my ($self, $tf) = @_;
+   # TODO
+}
+sub build_timeframes {
+   my ($self) = @_;
+   # TODO
+}
+sub set_timeframe {
+   my ($self, $tf) = @_;
+   # TODO
+}
+
+sub merge_delta_row {
+   my ($self, $row) = @_;
+   # TODO
+}
+
+sub compute_time_anchors {
+   my ($self) = @_;
+   # TODO
 }
 
 1;
