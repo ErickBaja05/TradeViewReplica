@@ -240,14 +240,75 @@ sub set_timeframe {
    # TODO
 }
 
+=head2 merge_delta_row()
+
+Gestiona la entrada de datos en tiempo real. 
+Si el registro entrante pertenece al mismo bloque de tiempo 
+que la última vela registrada, actualiza sus valores (High, Low, Close, Volume)
+dinámicamente. Si corresponde a un nuevo bloque de tiempo,
+inserta una nueva vela.
+
+=cut
+
 sub merge_delta_row {
    my ($self, $row) = @_;
-   # TODO
+   # Validación estricta de seguridad
+   return $self unless defined $row && ref($row) eq 'HASH' && exists $row->{time};
+
+   my $active_array = $self->_active_array();
+   my $last_idx = $self->last_index();
+
+   # Comprobamos si el arreglo tiene datos y si el tiempo del stream coincide con la última vela
+   if ($last_idx >= 0 && $active_array->[$last_idx]->{time} eq $row->{time}) {
+      
+      my $last_candle = $active_array->[$last_idx];
+      
+      # Actualizamos los extremos de la vela (si el precio subió o bajó más de lo registrado)
+      $last_candle->{high} = $row->{high} if $row->{high} > $last_candle->{high};
+      $last_candle->{low}  = $row->{low}  if $row->{low}  < $last_candle->{low};
+      
+      # El precio de cierre y el volumen se sobrescriben con el último dato del stream
+      $last_candle->{close}  = $row->{close};
+      $last_candle->{volume} = $row->{volume};
+   } else {
+      # Si el timestamp es distinto (o el arreglo está vacío), nace una nueva vela
+      push @{$active_array}, $row;
+   }
+   return $self;
 }
+
+=head2 compute_time_anchors()
+
+Analiza el arreglo de velas activas y calcula puntos estratégicos (anclajes) en la línea de tiempo. 
+Retorna una lista de índices y etiquetas formateadas para que el panel inferior dibuje el eje X
+sin sobreponer los textos.
+
+=cut
 
 sub compute_time_anchors {
    my ($self) = @_;
-   # TODO
+   my $active_array = $self->_active_array();
+   my @raw_anchors;
+   
+   # Recorremos todas las velas para procesar la marca de tiempo
+   for my $i (0 .. $#$active_array) {
+      my $time_str = $active_array->[$i]->{time};
+      
+      # Extraemos Hora (HH) y Minuto (MM) en dos grupos de captura nativos
+      if (defined $time_str && $time_str =~ /T(\d{2}):(\d{2})/) {
+         my $hh = $1;
+         my $mm = $2;
+         
+         # Guardamos el índice, la etiqueta visual y el minuto numérico.
+         push @raw_anchors, {
+            index  => $i,
+            label  => "$hh:$mm",
+            minute => int($mm) # Extraemos el entero para facilitar cálculos matemáticos
+         };
+      }
+   }
+   return \@raw_anchors;
 }
+
 
 1;
