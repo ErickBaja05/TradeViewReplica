@@ -37,10 +37,12 @@ sub new
 sub index_to_x
 {
     my ($self, $index) = @_;
-    
-    my $normalized = ($index - $self->{x_min}) / ($self->{x_max} - $self->{x_min});
 
-    my $x = $normalized * $self->{width};
+    my $offset = $index - $self->{offset};
+    my $plot_width = $self->{width} - $self->{margin_left} - $self->{margin_right};
+    my $candle_width = $plot_width / $self->{visible_bars};
+   
+    my $x = $self->{margin_left} + $offset * $candle_width;
 
     return $x;
 }
@@ -49,7 +51,14 @@ sub index_to_x
 sub x_to_index
 {
     my ($self, $x) = @_;
-    # TODO
+    
+    my $plot_width = $self->{width} - $self->{margin_left} - $self->{margin_right};
+    my $candle_width = $plot_width / $self->{visible_bars};
+    my $offset = ($x - $self->{margin_left}) / $candle_width;
+
+    my $index = int($offset + 0.5) + $self->{offset};
+
+    return $index;
 }
 
 # Convierte X → índice continuo
@@ -57,14 +66,28 @@ sub x_to_index
 sub x_to_index_float
 {
     my ($self, $x) = @_;
-    # TODO
+
+    my $plot_width = $self->{width} - $self->{margin_left} - $self->{margin_right};
+    my $candle_width = $plot_width / $self->{visible_bars};
+    my $offset = ($x - $self->{margin_left}) / $candle_width;
+
+    my $index = $offset + $self->{offset};
+    
+    return $index;
 }
 
 # Devuelve centro de una vela en X
 sub index_to_center_x
 {
     my ($self, $index) = @_;
-    # TODO
+
+    my $offset = $index - $self->{offset};
+    my $plot_width = $self->{width} - $self->{margin_left} - $self->{margin_right};
+    my $candle_width = $plot_width / $self->{visible_bars};
+   
+    my $x = $self->{margin_left} + $offset * $candle_width + $candle_width / 2;
+
+    return $x;
 }
 
 # Convierte valor (precio/indicador) → Y
@@ -72,9 +95,12 @@ sub value_to_y
 {
     my ($self, $value) = @_;
     
-    my $normalized = ($value - $self->{y_min}) / ($self->{y_max} - $self->{y_min});
+    my $plot_height = $self->{height} - $self->{margin_top} - $self->{margin_bottom};
+    my $range = $self->{y_max} - $self->{y_min};
+    return 0 if $range == 0;
+    my $normalized = ($value - $self->{y_min}) / ($range);
 
-    my $y = $normalized * $self->{height};
+    my $y = $normalized * $plot_height + $self->{margin_bottom};
 
     return $y;
 }
@@ -83,7 +109,15 @@ sub value_to_y
 sub y_to_value
 {
     my ($self, $y) = @_;
-    # TODO
+    
+    my $plot_height = $self->{height} - $self->{margin_top} - $self->{margin_bottom};
+    my $range = $self->{y_max} - $self->{y_min};
+    return 0 if $range == 0;
+
+    my $normalized = ($y - $self->{margin_bottom}) / $plot_height;
+    my $value = ($normalized * $range) + $self->{y_min};
+
+    return $value;
 }
 
 # Dibuja escala vertical (precios/valores)
