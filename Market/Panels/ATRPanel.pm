@@ -147,4 +147,72 @@ sub set_scale {
     return $self->{scale};
 }
 
-1; # Retorno verdadero obligatorio para módulos en Perl
+=head2 render
+
+Dibuja la curva continua del indicador ATR uniendo los puntos calculados mediante
+líneas vectoriales. Usa las escalas de Ricardo para X y el parche matemático para Y.
+
+Atributos de entrada:
+  - $data_slice : Referencia a la lista de hashes (necesaria para sincronizar los índices).
+
+=cut
+
+sub render {
+    my ($self, $data_slice) = @_;
+
+    return unless $data_slice && scalar(@$data_slice) > 0;
+
+    # 1. Actualizar las escalas locales del panel
+    my $scale = $self->set_scale();
+    my $canvas_height = $self->{canvas}->Height();
+
+    # 2. Recuperar el arreglo completo de valores del ATR desde el gestor de Josué
+    my $atr_values = [];
+    if (defined $self->{engine}->{indicator_manager}) {
+        $atr_values = $self->{engine}->{indicator_manager}->get_atr_values() || [];
+    }
+    return if scalar @$atr_values == 0;
+
+    # 3. Obtener el rango vertical de volatilidad visible para aplicar la fórmula temporal
+    my ($atr_min, $atr_max) = $self->get_y_range();
+    my $rango_y = $atr_max - $atr_min;
+    $rango_y = 1.0 if $rango_y == 0;
+
+    # 4. Sincronizar índices de iteración con la ventana del motor central de Erick
+    my ($start_index, $end_index) = $self->{engine}->compute_window();
+
+    # Variables de control para conectar el punto anterior con el punto actual (Línea continua)
+    my ($last_x, $last_y);
+
+    my $i = $start_index;
+    for my $candle (@$data_slice) {
+        last if $i > $end_index;
+
+        my $atr_val = $atr_values->[$i];
+        
+        if (defined $atr_val) {
+            # A. Obtener coordenada X del módulo de Ricardo
+            my $x_current = $scale->index_to_center_x($i);
+
+            # B. Aplicar el parche matemático para el eje Y del indicador
+            my $y_current = $canvas_height - (($atr_val - $atr_min) / $rango_y) * $canvas_height;
+
+            # C. Si existe un punto previo registrado, trazamos el segmento de línea intermedia
+            if (defined $last_x && defined $last_y) {
+                $self->{canvas}->createLine(
+                    $last_x, $last_y,
+                    $x_current, $y_current,
+                    -fill  => '#2196f3', # Azul brillante estilo TradingView para indicadores
+                    -width => 2          # Línea ligeramente más gruesa para mejor visibilidad
+                );
+            }
+
+            # D. Actualizar el rastro del último punto dibujado
+            $last_x = $x_current;
+            $last_y = $y_current;
+        }
+        $i++;
+    }
+}
+
+1;
