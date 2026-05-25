@@ -133,4 +133,84 @@ sub set_scale {
     return $self->{scale};
 }
 
+=head2 render
+
+Dibuja las velas japonesas (mechas y cuerpos) en el canvas superior utilizando
+el data_slice recibido de la capa lógica. Aplica el parche matemático para el eje Y.
+
+Atributos de entrada:
+  - $data_slice : Referencia a un arreglo de hashes con los datos OHLCV visibles.
+
+=cut
+
+sub render {
+    my ($self, $data_slice) = @_;
+
+    return unless $data_slice && scalar(@$data_slice) > 0;
+
+    # 1. Forzar la actualización matemática de las escalas según la geometría actual de Tk
+    my $scale = $self->set_scale();
+    my $canvas_height = $self->{canvas}->Height();
+
+    # 2. Obtener el rango dinámico vertical de este conjunto para aplicar la fórmula temporal
+    my ($precio_min, $precio_max) = $self->get_y_range();
+    my $rango_y = $precio_max - $precio_min;
+    $rango_y = 1.0 if $rango_y == 0; # Prevenir división por cero
+
+    # 3. Calcular un ancho dinámico proporcional para las velas financieras
+    my $canvas_width = $self->{canvas}->Width();
+    my $visible_bars = $self->{engine}->{visible_bars} || 100;
+    my $candle_width = ($canvas_width / $visible_bars) * 0.7; # 70% ocupado por la vela, 30% espacio
+    $candle_width = 1 if $candle_width < 1;
+
+    # 4. Recuperar los índices de datos reales mapeados por Erick para este bloque visible
+    my ($start_index, $end_index) = $self->{engine}->compute_window();
+
+    # 5. Iterar sobre las velas usando un índice incremental
+    my $i = $start_index;
+    for my $candle (@$data_slice) {
+        last if $i > $end_index; # Control de seguridad para desbordamientos
+
+        # A. Obtener la coordenada X central llamando a la función de Ricardo
+        my $x_center = $scale->index_to_center_x($i);
+
+        # B. Aplicar el parche matemático temporal para mapear los precios OHLC al eje Y de píxeles
+        my $y_open  = $canvas_height - (($candle->{open}  - $precio_min) / $rango_y) * $canvas_height;
+        my $y_high  = $canvas_height - (($candle->{high}  - $precio_min) / $rango_y) * $canvas_height;
+        my $y_low   = $canvas_height - (($candle->{low}   - $precio_min) / $rango_y) * $canvas_height;
+        my $y_close = $canvas_height - (($candle->{close}  - $precio_min) / $rango_y) * $canvas_height;
+
+        # C. Determinar el color financiero de la vela según su comportamiento de cierre
+        my $color = '#ef5350'; # Rojo bajista por defecto (TradingView Style)
+        if ($candle->{close} >= $candle->{open}) {
+            $color = '#26a69a'; # Verde alcista (TradingView Style)
+        }
+
+        # D. DIBUJAR LA MECHA (Línea vertical continua desde el High hasta el Low)
+        $self->{canvas}->createLine(
+            $x_center, $y_high,
+            $x_center, $y_low,
+            -fill  => $color,
+            -width => 1
+        );
+
+        # E. DIBUJAR EL CUERPO (Rectángulo delimitado entre Open y Close)
+        my $x1 = $x_center - ($candle_width / 2);
+        my $x2 = $x_center + ($candle_width / 2);
+        
+        # Asegurar orden correcto de coordenadas en Tk para evitar glitches visuales
+        my $y_top = $y_open < $y_close ? $y_open : $y_close;
+        my $y_bot = $y_open > $y_close ? $y_open : $y_close;
+
+        $self->{canvas}->createRectangle(
+            $x1, $y_top,
+            $x2, $y_bot,
+            -fill    => $color,
+            -outline => $color
+        );
+
+        $i++;
+    }
+}
+
 1;
