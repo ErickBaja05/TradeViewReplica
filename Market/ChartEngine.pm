@@ -169,9 +169,121 @@ sub request_render {
     }
 }
 
-sub render                   { my ($self) = @_; return; }
-sub bind_all_canvas          { my ($self) = @_; return; }
-sub bind_events              { my ($self) = @_; return; }
+=head2 render
+
+Orquesta el dibujado principal del gráfico. 
+Calcula qué datos se ven, limpia la pantalla y le da la orden de pintar a cada panel.
+=cut
+
+sub render {
+    my ($self) = @_;
+
+    # 1. Calculamos qué porción del arreglo de velas estamos viendo (Día 2)
+    my ($start, $end) = $self->compute_window();
+
+    # 2. Le pedimos a la capa de datos de Josue exactamente ese "pedazo" (slice)
+    my $data_slice = $self->{market_data}->get_slice($start, $end);
+
+    # Si por algún motivo no hay datos, detenemos el renderizado
+    return unless $data_slice && scalar(@$data_slice) > 0;
+
+    # 3. Limpiamos ambos lienzos de Tk por completo antes de pintar el nuevo "fotograma"
+    $self->{price_canvas}->delete('all');
+    $self->{atr_canvas}->delete('all');
+
+    # 4. Le enviamos los datos exactos a Domenica para que pinte sus respectivos paneles
+    $self->{price_panel}->render($data_slice) if $self->{price_panel};
+    $self->{atr_panel}->render($data_slice)   if $self->{atr_panel};
+}
+
+
+=head2 bind_all_canvas
+
+Conecta los eventos físicos del usuario (mouse, redimensionar ventana) 
+con las lógicas de este motor gráfico.
+=cut
+
+sub bind_all_canvas {
+    my ($self) = @_;
+
+    my $price_cv = $self->{price_canvas};
+    my $atr_cv   = $self->{atr_canvas};
+
+    # Evento <Configure>: Se dispara cada vez que el usuario cambia el tamaño de la ventana.
+    # Al cambiar el tamaño, solicitamos un re-renderizado para ajustar las escalas.
+    $price_cv->Tk::bind('<Configure>', sub { $self->request_render(); });
+    $atr_cv->Tk::bind('<Configure>', sub { $self->request_render(); });
+
+    # Evento <Motion>: Se dispara al mover el mouse sin presionar botones.
+    # Capturamos el evento y se lo pasamos a tu función de Crosshair (línea negra).
+    $price_cv->Tk::bind('<Motion>', sub { 
+        my $event = $price_cv->XEvent; 
+        $self->on_mouse_move($event); 
+    });
+    $atr_cv->Tk::bind('<Motion>', sub { 
+        my $event = $atr_cv->XEvent; 
+        $self->on_mouse_move($event); 
+    });
+}
+
+=head2 bind_events
+
+Conecta los eventos globales de la ventana principal (teclado y rueda del mouse)
+con las acciones de control del motor (zoom, scroll y reinicio).
+
+Retorna:
+  - Nada.
+=cut
+
+sub bind_events {
+    my ($self) = @_;
+
+    my $mw = $self->{widgets}->{main_window};
+    return unless $mw;
+
+    # --- 1. CONTROL DE ZOOM CON LA RUEDA DEL RATÓN ---
+    # En sistemas basados en Linux/X11, la rueda del ratón no se captura siempre
+    # con el evento '<MouseWheel>', sino como clics de los botones físicos 4 y 5.
+    
+    # Rueda hacia arriba -> Acercar (Zoom In: reducir barras visibles)
+    $mw->Tk::bind('<Button-4>', sub { 
+        $self->horizontal_zoom(1); 
+    });
+
+    # Rueda hacia abajo -> Alejar (Zoom Out: aumentar barras visibles)
+    $mw->Tk::bind('<Button-5>', sub { 
+        $self->horizontal_zoom(-1); 
+    });
+
+
+    # --- 2. CONTROL DE SCROLL CON LAS FLECHAS DEL TECLADO ---
+    # Flecha Izquierda: Desplazarse hacia el pasado (incrementar el offset)
+    $mw->Tk::bind('<Left>', sub {
+        my $market_data = $self->{market_data};
+        my $total_candles = $market_data ? $market_data->size() : 0;
+
+        # Evitamos que el scroll supere la cantidad total de datos disponibles
+        if ($self->{offset} < $total_candles - $self->{visible_bars}) {
+            $self->{offset}++;
+            $self->request_render();
+        }
+    });
+
+    # Flecha Derecha: Desplazarse hacia el presente (disminuir el offset)
+    $mw->Tk::bind('<Right>', sub {
+        if ($self->{offset} > 0) {
+            $self->{offset}--;
+            $self->request_render();
+        }
+    });
+
+
+    # --- 3. ATAJOS DE TECLADO ESTILO TRADINGVIEW ---
+    # Tecla 'r' o 'R': Invoca el reinicio completo de la vista (escala y offset por defecto)
+    $mw->Tk::bind('<Key-r>', sub { $self->reset_view(); });
+    $mw->Tk::bind('<Key-R>', sub { $self->reset_view(); });
+}
+
 sub horizontal_zoom          { my ($self, $delta) = @_; return; }
 sub _vertical_drag           { my ($self, $dy) = @_; return; }
 sub vertical_zoom            { my ($self, $factor) = @_; return; }
