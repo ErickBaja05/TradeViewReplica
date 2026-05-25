@@ -54,14 +54,18 @@ my $candle = {
 };
 $market_data->add_candle($candle); # Agrega la vela al arreglo interno de velas (candles) en MarketData.pm
 
-# # Tarea B: Invoca la actualización del mercado entre distintas temporalidades
-# $market_data->build_timeframes();
+#Tarea B: Invoca la actualización del mercado entre distintas temporalidades
+$market_data->build_timeframes();
 
-# # Tarea C: Invoca la actualización de los indicadores desacoplados
-# $indicator_manager->update_last($market_data);
+#Tarea C: Invoca la actualización de los indicadores desacoplados
+$indicator_manager->update_last($market_data);
 
-# # Tarea D: Dibuja el primer chart visual en pantalla
-# $chart_engine->render();
+#Tarea D: Dibuja el primer chart visual en pantalla
+
+# Activación de los escuchadores de eventos para el Día 3
+$chart_engine->bind_all_canvas();
+$chart_engine->bind_events();
+$chart_engine->render();
 
 
 # 4. Lanzamiento del ciclo principal de escucha de eventos de la interfaz
