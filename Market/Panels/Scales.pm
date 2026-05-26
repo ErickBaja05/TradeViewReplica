@@ -92,13 +92,15 @@ sub index_to_center_x
 sub value_to_y
 {
     my ($self, $value) = @_;
-    
+
     my $plot_height = $self->{height} - $self->{margin_top} - $self->{margin_bottom};
     my $range = $self->{y_max} - $self->{y_min};
     return 0 if $range == 0;
-    my $normalized = ($value - $self->{y_min}) / ($range);
+    
+    my $normalized = ($value - $self->{y_min}) / $range;
 
-    my $y = $normalized * $plot_height + $self->{margin_bottom};
+    # Inversion del eje y para tk
+    my $y = $self->{height} - $self->{margin_bottom} - ($normalized * $plot_height);
 
     return $y;
 }
@@ -112,7 +114,8 @@ sub y_to_value
     my $range = $self->{y_max} - $self->{y_min};
     return 0 if $range == 0;
 
-    my $normalized = ($y - $self->{margin_bottom}) / $plot_height;
+    my $normalized = ($self->{height} - $self->{margin_bottom} - $y) / $plot_height;
+
     my $value = ($normalized * $range) + $self->{y_min};
 
     return $value;
