@@ -19,8 +19,6 @@ sub new
         visible_bars  => $args{visible_bars}  || 100,
         offset        => $args{offset}        || 0,
         # Coordenadas
-        x_min         => $args{x_min}         || 0,
-        y_min         => $args{x_min}         || 1,
         y_min         => $args{y_min}         || 0,
         y_max         => $args{y_max}         || 1,
         # Margenes
