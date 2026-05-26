@@ -284,14 +284,64 @@ sub bind_events {
     $mw->Tk::bind('<Key-R>', sub { $self->reset_view(); });
 }
 
-sub horizontal_zoom          { my ($self, $delta) = @_; return; }
+
 sub _vertical_drag           { my ($self, $dy) = @_; return; }
 sub vertical_zoom            { my ($self, $factor) = @_; return; }
-sub on_mouse_move            { my ($self, $event) = @_; return; }
-sub _draw_crosshair_all      { my ($self) = @_; return; }
 sub set_timeframe            { my ($self, $tf) = @_; return; }
-sub reset_view               { my ($self) = @_; return; }
 sub compute_intraday_labels  { my ($self) = @_; return; }
+
+=head2 on_mouse_move
+
+Captura el evento de movimiento del ratón desde Tk, extrae las coordenadas físicas
+y determina qué panel está recibiendo el foco actualmente.
+=cut
+
+sub on_mouse_move {
+    my ($self, $event) = @_;
+
+    # Validamos que el evento exista
+    return unless $event;
+
+    # Extraemos la posición X del ratón (Esta coordenada es idéntica para todos los paneles)
+    my $x = $event->x;
+    
+    # Extraemos la posición Y (¡Ojo! Esta coordenada es local al canvas que la generó)
+    my $y = $event->y;
+
+    # Identificamos qué widget (Canvas) generó el evento físicamente
+    my $active_widget = $event->W;
+
+    # Pasamos las coordenadas y el widget activo al orquestador de dibujado
+    $self->draw_crosshair_all($x, $y, $active_widget);
+}
+
+=head2 draw_crosshair_all
+
+Propaga la orden de dibujar el crosshair (la línea en cruz) a todos los paneles registrados.
+Le indica a cada panel si tiene el foco del ratón para que decida si dibuja la línea horizontal.
+=cut
+
+sub draw_crosshair_all {
+    my ($self, $x, $y, $active_widget) = @_;
+
+    # 1. Enviar coordenadas al Panel de Precios (Domenica)
+    if ($self->{price_panel}) {
+        # Verificamos si el ratón está físicamente sobre este canvas
+        my $is_active = ($active_widget == $self->{price_canvas}) ? 1 : 0;
+        $self->{price_panel}->draw_crosshair($x, $y, $is_active);
+    }
+
+    # 2. Enviar coordenadas al Panel de Volatilidad ATR (Domenica)
+    if ($self->{atr_panel}) {
+        my $is_active = ($active_widget == $self->{atr_canvas}) ? 1 : 0;
+        $self->{atr_panel}->draw_crosshair($x, $y, $is_active);
+    }
+}
+
+
+sub horizontal_zoom          { my ($self, $delta) = @_; return; }
+sub reset_view               { my ($self) = @_; return; }
+
 
 =head2 get_all_timestamps
 
