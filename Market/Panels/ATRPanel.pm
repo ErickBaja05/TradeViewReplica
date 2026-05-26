@@ -38,7 +38,7 @@ sub new {
         -fill   => 'both',
         -expand => 0
     );
-
+    
     return bless $self, $class;
 }
 
@@ -155,7 +155,6 @@ sub set_scale {
         height       => $height,
         visible_bars => $self->{engine}->{visible_bars},
         offset       => $self->{engine}->{offset},
-        x_min        => 0,
         y_min        => $min_y,
         y_max        => $max_y,
     );
@@ -209,21 +208,25 @@ sub render {
     my $rango_y = $atr_max - $atr_min;
     $rango_y = 1.0 if $rango_y == 0;
 
-    # 4. Sincronizar índices de iteración con la ventana del motor central de Erick
+   # 4. Sincronizar índices de iteración con la ventana del motor central de Erick
     my ($start_index, $end_index) = $self->{engine}->compute_window();
 
     # Variables de control para conectar el punto anterior con el punto actual (Línea continua)
     my ($last_x, $last_y);
 
     my $i = $start_index;
+    my $posicion_relativa = 0; # NUEVO: Controlador local para la pantalla
+
     for my $candle (@$data_slice) {
         last if $i > $end_index;
 
         my $atr_val = $atr_values->[$i];
         
         if (defined $atr_val) {
-            # A. Obtener coordenada X del módulo de Ricardo
-            my $x_current = $scale->index_to_center_x($i);
+            # A. SOLUCIÓN AL CUELLO DE BOTELLA DEL SCROLL:
+            # Sumamos el offset actual para neutralizar la resta en el módulo de Ricardo
+            my $offset_actual = $self->{engine}->{offset} || 0;
+            my $x_current = $scale->index_to_center_x($posicion_relativa + $offset_actual);
 
             # B. Aplicar el parche matemático para el eje Y del indicador
             my $y_current = $canvas_height - (($atr_val - $atr_min) / $rango_y) * $canvas_height;
@@ -233,8 +236,8 @@ sub render {
                 $self->{canvas}->createLine(
                     $last_x, $last_y,
                     $x_current, $y_current,
-                    -fill  => '#2196f3', # Azul brillante estilo TradingView para indicadores
-                    -width => 2          # Línea ligeramente más gruesa para mejor visibilidad
+                    -fill  => '#2196f3', # Azul brillante estilo TradingView
+                    -width => 2
                 );
             }
 
@@ -243,7 +246,69 @@ sub render {
             $last_y = $y_current;
         }
         $i++;
+        $posicion_relativa++; # Aumentamos la posición relativa para la siguiente iteración
     }
+}
+
+=head2 init_crosshair
+
+Inicializa los objetos de tipo línea para el crosshair en el panel del indicador ATR.
+
+=cut
+
+sub init_crosshair {
+    my ($self) = @_;
+
+    my $crosshair_color = '#555555';
+
+    # Línea vertical inicial en cero
+    $self->{crosshair_v_id} = $self->{canvas}->createLine(
+        0, 0, 0, 0,
+        -fill => $crosshair_color,
+        -dash => '.',
+        -tags => ['crosshair_internal']
+    );
+
+    # Línea horizontal inicial en cero
+    $self->{crosshair_h_id} = $self->{canvas}->createLine(
+        0, 0, 0, 0,
+        -fill => $crosshair_color,
+        -dash => '.',
+        -tags => ['crosshair_internal']
+    );
+
+    return;
+}
+
+=head2 draw_crosshair
+
+Actualiza la posición del cursor en cruz dentro del panel del indicador ATR.
+
+=cut
+
+sub draw_crosshair {
+    my ($self, $x, $y, $is_active) = @_;
+
+    my $canvas_height = $self->{canvas}->Height();
+    my $canvas_width  = $self->{canvas}->Width();
+
+    return if $canvas_width <= 1 || $canvas_height <= 1;
+
+    # 1. Mover la línea vertical de forma sincronizada con el precio
+    if (defined $self->{crosshair_v_id}) {
+        $self->{canvas}->coords($self->{crosshair_v_id}, $x, 0, $x, $canvas_height);
+    }
+
+    # 2. Mover u ocultar la línea horizontal local del ATR
+    if (defined $self->{crosshair_h_id}) {
+        if ($is_active) {
+            $self->{canvas}->coords($self->{crosshair_h_id}, 0, $y, $canvas_width, $y);
+        } else {
+            $self->{canvas}->coords($self->{crosshair_h_id}, 0, 0, 0, 0);
+        }
+    }
+
+    return;
 }
 
 1;

@@ -43,7 +43,7 @@ sub new {
         -fill   => 'both',
         -expand => 1
     );
-
+    
     return bless $self, $class;
 }
 
@@ -125,7 +125,6 @@ sub set_scale {
         height       => $height,
         visible_bars => $self->{engine}->{visible_bars},
         offset       => $self->{engine}->{offset},
-        x_min        => 0,
         y_min        => $min_y,
         y_max        => $max_y,
     );
@@ -168,11 +167,12 @@ sub render {
 
     # 5. Iterar sobre las velas usando un índice incremental
     my $i = $start_index;
+    my $posicion_relativa = 0; # Para depuración y trazabilidad de datos
     for my $candle (@$data_slice) {
         last if $i > $end_index; # Control de seguridad para desbordamientos
 
-        # A. Obtener la coordenada X central llamando a la función de Ricardo
-        my $x_center = $scale->index_to_center_x($i);
+        my $offset_actual = $self->{engine}->{offset} || 0;
+        my $x_center = $scale->index_to_center_x($posicion_relativa + $offset_actual);
 
         # B. Aplicar el parche matemático temporal para mapear los precios OHLC al eje Y de píxeles
         my $y_open  = $canvas_height - (($candle->{open}  - $precio_min) / $rango_y) * $canvas_height;
@@ -210,7 +210,77 @@ sub render {
         );
 
         $i++;
+        $posicion_relativa++;
     }
+}
+
+=head2 _init_crosshair_objects
+
+Inicializa los objetos gráficos del crosshair (líneas vertical y horizontal) 
+dentro del canvas de precios y almacena sus IDs para optimizar el rendimiento.
+
+=cut
+
+sub _init_crosshair_objects {
+    my ($self) = @_;
+
+    my $crosshair_color = '#555555';
+
+    # Creamos la línea vertical oculta/en cero al inicio
+    $self->{crosshair_v_id} = $self->{canvas}->createLine(
+        0, 0, 0, 0,
+        -fill => $crosshair_color,
+        -dash => '.',
+        -tags => ['crosshair_internal']
+    );
+
+    # Creamos la línea horizontal oculta/en cero al inicio
+    $self->{crosshair_h_id} = $self->{canvas}->createLine(
+        0, 0, 0, 0,
+        -fill => $crosshair_color,
+        -dash => '.',
+        -tags => ['crosshair_internal']
+    );
+
+    return;
+}
+
+=head2 draw_crosshair
+
+Actualiza dinámicamente las coordenadas de las líneas de la cruz existentes.
+Controla la visibilidad de la línea horizontal según el foco del panel.
+
+Atributos de entrada:
+  - $x         : Coordenada X física del ratón.
+  - $y         : Coordenada Y física del ratón (local a este canvas).
+  - $is_active : Booleano (1 o 0) que indica si el mouse está sobre este panel.
+
+=cut
+
+sub draw_crosshair {
+    my ($self, $x, $y, $is_active) = @_;
+
+    my $canvas_height = $self->{canvas}->Height();
+    my $canvas_width  = $self->{canvas}->Width();
+
+    return if $canvas_width <= 1 || $canvas_height <= 1;
+
+    # 1. Mover la línea vertical (Siempre visible y sincronizada en X)
+    if (defined $self->{crosshair_v_id}) {
+        $self->{canvas}->coords($self->{crosshair_v_id}, $x, 0, $x, $canvas_height);
+    }
+
+    # 2. Mover la línea horizontal (Solo se posiciona si el panel está activo)
+    if (defined $self->{crosshair_h_id}) {
+        if ($is_active) {
+            $self->{canvas}->coords($self->{crosshair_h_id}, 0, $y, $canvas_width, $y);
+        } else {
+            # Si el panel no está activo, "escondemos" la línea horizontal enviándola a coordenadas cero
+            $self->{canvas}->coords($self->{crosshair_h_id}, 0, 0, 0, 0);
+        }
+    }
+    
+    return;
 }
 
 1;
