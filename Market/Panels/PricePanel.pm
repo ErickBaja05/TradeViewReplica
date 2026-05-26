@@ -212,6 +212,11 @@ sub render {
         $i++;
         $posicion_relativa++;
     }
+    # 1. Llamar al dibujo del eje temporal
+    $self->draw_time_axis();
+
+    # 2. Inicializar los objetos de la cruz
+    $self->_init_crosshair_objects();
 }
 
 =head2 _init_crosshair_objects
@@ -281,6 +286,47 @@ sub draw_crosshair {
     }
     
     return;
+}
+
+=head2 draw_time_axis
+
+Dibuja las etiquetas de tiempo (horas/minutos) en el margen inferior del lienzo.
+=cut
+
+sub draw_time_axis {
+    my ($self) = @_;
+
+    # Obtenemos los timestamps gracias a la función de Erick en el motor
+    my $timestamps = $self->{engine}->get_all_timestamps();
+    return unless $timestamps && scalar(@$timestamps) > 0;
+
+    my $scale = $self->{scale};
+    my $canvas_height = $self->{canvas}->Height();
+    
+    # Dibujamos el texto en el margen inferior (los 25 píxeles que dejó Ricardo)
+    my $y_pos = $canvas_height - 10; 
+
+    my $posicion_relativa = 0;
+    my $offset_actual = $self->{engine}->{offset} || 0;
+
+    for my $ts (@$timestamps) {
+        # Mostrar solo 1 de cada 10 etiquetas para que los textos no se amontonen
+        if ($posicion_relativa % 10 == 0) {
+            my $x = $scale->index_to_center_x($posicion_relativa + $offset_actual);
+            
+            # Extraer solo la hora (HH:MM) del formato ISO usando una expresión regular
+            my ($hora) = $ts =~ /T(\d{2}:\d{2})/;
+            $hora //= $ts; # Fallback por si el formato es distinto
+            
+            $self->{canvas}->createText(
+                $x, $y_pos,
+                -text => $hora,
+                -fill => '#a0a0a0', # Color gris claro para textos secundarios
+                -font => ['Helvetica', 9]
+            );
+        }
+        $posicion_relativa++;
+    }
 }
 
 1;

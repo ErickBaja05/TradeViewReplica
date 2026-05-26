@@ -248,6 +248,8 @@ sub render {
         $i++;
         $posicion_relativa++; # Aumentamos la posición relativa para la siguiente iteración
     }
+
+    $self->init_crosshair();
 }
 
 =head2 init_crosshair
