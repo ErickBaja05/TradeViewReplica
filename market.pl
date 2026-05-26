@@ -19,8 +19,10 @@ $mw->title("Replica Financiera TradingView - EPN");
 $mw->geometry("1720x900");
 
 # Creación de layouts verticales independientes para los dos paneles
-my $price_frame = $mw->Frame()->pack(-fill => 'both', -expand => 1);
-my $atr_frame   = $mw->Frame()->pack(-fill => 'both', -expand => 1);
+# Creación de layouts verticales
+# El Precio se expande (ocupa todo lo posible), el ATR NO se expande (ocupa solo lo necesario)
+my $price_frame = $mw->Frame(-bg => '#131722')->pack(-fill => 'both', -expand => 1);
+my $atr_frame   = $mw->Frame(-bg => '#131722')->pack(-fill => 'both', -expand => 0);
 
 # Inicialización de los lienzos (Canvases)
 my $price_canvas = $price_frame->Canvas()->pack(-fill => 'both', -expand => 1);
@@ -81,6 +83,24 @@ $market_data->build_timeframes();
 
 #Tarea C: Invoca la actualización de los indicadores desacoplados
 $indicator_manager->update_last($market_data);
+
+# --- PARCHE TEMPORAL PARA PROBAR EL PANEL ATR DE DOMENICA (DÍA 4) ---
+# Creamos un objeto falso (Mock) que simula ser el indicador ATR de Ricardo
+{
+    package MockATR;
+    sub new { bless { values => [] }, shift }
+    sub get_values { return shift->{values} }
+}
+my $atr_falso = MockATR->new();
+
+# Llenamos el indicador falso con números aleatorios para las 30,000 velas
+for (my $i = 0; $i < $market_data->size(); $i++) {
+    push @{$atr_falso->{values}}, 10 + rand(5); # Valores aleatorios entre 10 y 15
+}
+
+# ¡Registramos el indicador falso en el estante de Ricardo!
+$indicator_manager->register('ATR', $atr_falso);
+# ---------------------------------------------------------------------
 
 #Tarea D: Dibuja el primer chart visual en pantalla
 
