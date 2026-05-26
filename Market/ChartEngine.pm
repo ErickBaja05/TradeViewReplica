@@ -204,7 +204,7 @@ sub render {
 
 =head2 bind_all_canvas
 
-Conecta los eventos físicos del usuario (mouse, redimensionar ventana) 
+Conecta los eventos físicos del usuario (mouse, arrastre, redimensionar ventana) 
 con las lógicas de este motor gráfico.
 =cut
 
@@ -214,21 +214,82 @@ sub bind_all_canvas {
     my $price_cv = $self->{price_canvas};
     my $atr_cv   = $self->{atr_canvas};
 
-    # Evento <Configure>: Se dispara cada vez que el usuario cambia el tamaño de la ventana.
-    # Al cambiar el tamaño, solicitamos un re-renderizado para ajustar las escalas.
+    # 1. Evento <Configure>: Ajuste elástico al cambiar el tamaño de la ventana
     $price_cv->Tk::bind('<Configure>', sub { $self->request_render(); });
     $atr_cv->Tk::bind('<Configure>', sub { $self->request_render(); });
 
-    # Evento <Motion>: Se dispara al mover el mouse sin presionar botones.
-    # Capturamos el evento y se lo pasamos a tu función de Crosshair (línea negra).
+    # 2. Evento <Motion>: Mover las líneas del Crosshair (Línea en cruz)
     $price_cv->Tk::bind('<Motion>', sub { 
-        my $event = $price_cv->XEvent; 
-        $self->on_mouse_move($event); 
+        my $widget = shift; my $e = $widget->XEvent; $self->on_mouse_move($e) if $e; 
     });
     $atr_cv->Tk::bind('<Motion>', sub { 
-        my $event = $atr_cv->XEvent; 
-        $self->on_mouse_move($event); 
+        my $widget = shift; my $e = $widget->XEvent; $self->on_mouse_move($e) if $e; 
     });
+
+    # =========================================================================
+    # LOGICA DE ARRASTRE HORIZONTAL ESTILO TRADINGVIEW (PANNING)
+    # =========================================================================
+    
+    # Recorremos ambos lienzos para aplicarles la misma regla de arrastre
+    for my $canvas ($price_cv, $atr_cv) {
+        
+        # A. Cuando el usuario hace CLIC IZQUIERDO, congelamos el punto de inicio X
+        $canvas->Tk::bind('<Button-1>', sub {
+            my $widget = shift;
+            my $e = $widget->XEvent;
+            if ($e) {
+                # Guardamos temporalmente el píxel X actual en el motor
+                $self->{last_drag_x} = $e->x;
+            }
+        });
+
+        # B. Cuando el usuario MUEVE EL RATÓN CON EL CLIC PRESIONADO
+        $canvas->Tk::bind('<B1-Motion>', sub {
+            my $widget = shift;
+            my $e = $widget->XEvent;
+            
+            # Validaciones de seguridad
+            return unless $e && defined $self->{last_drag_x};
+            return unless defined $self->{price_panel} && defined $self->{price_panel}->{scale};
+
+            # Calcular la diferencia en píxeles (Delta X)
+            my $delta_x = $e->x - $self->{last_drag_x};
+
+            # Le pedimos al módulo de Ricardo cuánto mide el ancho real de una sola vela en píxeles
+            my $scale = $self->{price_panel}->{scale};
+            my $plot_width = $scale->{width} - $scale->{margin_left} - $scale->{margin_right};
+            my $candle_width = ($plot_width / $self->{visible_bars}) || 1;
+
+            # Traducimos los píxeles arrastrados a cantidad de velas
+            my $velas_desplazadas = int($delta_x / $candle_width);
+
+            # Si el movimiento es lo suficientemente grande como para saltar al menos una vela
+            if ($velas_desplazadas != 0) {
+                my $market_data = $self->{market_data};
+                my $total_candles = $market_data ? $market_data->size() : 0;
+
+                # Si arrastramos a la izquierda (delta negativo), avanzamos al pasado (offset aumenta)
+                # Si arrastramos a la derecha (delta positivo), volvemos al presente (offset disminuye)
+                my $nuevo_offset = $self->{offset} + $velas_desplazadas;
+
+                # Control estricto de fronteras para no salirnos de la base de datos de Josué
+                if ($nuevo_offset >= 0 && $nuevo_offset < $total_candles - $self->{visible_bars}) {
+                    $self->{offset} = $nuevo_offset;
+                    
+                    # ACTUALIZACIÓN CRUCIAL: Reseteamos el punto de origen al píxel actual 
+                    # para que el arrastre sea continuo y suave, no un salto infinito brusco.
+                    $self->{last_drag_x} = $e->x;
+                    
+                    $self->request_render();
+                }
+            }
+        });
+        
+        # C. Al soltar el clic, limpiamos la variable para liberar la memoria del arrastre
+        $canvas->Tk::bind('<ButtonRelease-1>', sub {
+            $self->{last_drag_x} = undef;
+        });
+    }
 }
 
 =head2 bind_events
