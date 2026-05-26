@@ -34,10 +34,10 @@ sub new {
         die "[ERROR PricePanel]: Objeto Canvas de Tk no recibido en el constructor.\n";
     }
 
-    # RESOLUCIÓN CUELLO DE BOTELLA - LAYOUT VISUAL ELÁSTICO
-    # El panel de precios ocupa la mayor parte de la pantalla (área principal).
-    # - fill => 'both' : Permite que el canvas se estire horizontal y verticalmente.
-    # - expand => 1    : Le asigna prioridad de crecimiento al redimensionar la ventana.
+    # El panel se adueña de su color de fondo (TradingView Style)
+    $self->{canvas}->configure(-bg => '#131722');
+
+    # Resolución layout visual elástico
     $self->{canvas}->pack(
         -side   => 'top',
         -fill   => 'both',
