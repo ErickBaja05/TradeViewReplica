@@ -16,15 +16,15 @@ use Market::ChartEngine;
 # 1. Configuración del contenedor principal de la interfaz gráfica (Tk)
 my $mw = MainWindow->new();
 $mw->title("Replica Financiera TradingView - EPN");
-$mw->geometry("1024x768");
+$mw->geometry("1720x900");
 
 # Creación de layouts verticales independientes para los dos paneles
 my $price_frame = $mw->Frame()->pack(-fill => 'both', -expand => 1);
 my $atr_frame   = $mw->Frame()->pack(-fill => 'both', -expand => 1);
 
-# Inicialización de los lienzos (Canvases) con fondo oscuro estilo TradingView
-my $price_canvas = $price_frame->Canvas(-bg => '#131722')->pack(-fill => 'both', -expand => 1);
-my $atr_canvas   = $atr_frame->Canvas(-bg => '#131722')->pack(-fill => 'both', -expand => 1);
+# Inicialización de los lienzos (Canvases)
+my $price_canvas = $price_frame->Canvas()->pack(-fill => 'both', -expand => 1);
+my $atr_canvas   = $atr_frame->Canvas()->pack(-fill => 'both', -expand => 1);
 
 
 # 2. Instanciación e interconexión de las capas arquitectónicas
@@ -44,15 +44,30 @@ my $chart_engine = Market::ChartEngine->new(
 # 3. Tareas secuenciales requeridas por el documento de requerimientos
 # Tarea A: Invoca la lectura de los datos (Día 1: Datos Mock/Simulados básicos)
 
-my $candle = {
-    time   => '2026-04-01T00:00:00-05:00',
-    open   => 24013.75,
-    high   => 24013.75,
-    low    => 24007.50,
-    close  => 24009.25,
-    volume => 67
-};
-$market_data->add_candle($candle); # Agrega la vela al arreglo interno de velas (candles) en MarketData.pm
+# Tarea A: Invoca la lectura de los datos (Mock de 150 velas)
+my $precio_actual = 24000;
+
+#$market_data->get_data(); DESCOMENTAR Y BORRAR EL BUCLE FOR CUANDO EN GET DATA YA SE HAYA IMPLEMENTADO LA LECTURA DE DATOS REALES DESDE ARCHIVO O API. ESTE BUCLE SOLO SIRVE PARA SIMULAR DATOS EN ESTA FASE INICIAL.
+
+for my $i (0 .. 150) {
+    # Generamos variaciones aleatorias para simular el mercado
+    my $open  = $precio_actual + (rand(20) - 10);
+    my $close = $open + (rand(20) - 10);
+    my $high  = ($open > $close ? $open : $close) + rand(10);
+    my $low   = ($open < $close ? $open : $close) - rand(10);
+    
+    $market_data->add_candle({
+        time   => "2026-04-01T00:00:$i",
+        open   => $open,
+        high   => $high,
+        low    => $low,
+        close  => $close,
+        volume => int(rand(100)) + 10
+    });
+    
+    # Actualizamos el precio base para la siguiente vela
+    $precio_actual = $close;
+}
 
 #Tarea B: Invoca la actualización del mercado entre distintas temporalidades
 $market_data->build_timeframes();
