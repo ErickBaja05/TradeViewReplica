@@ -28,11 +28,11 @@ sub new {
     unless ($self->{canvas}) {
         die "[ERROR ATRPanel]: Objeto Canvas de Tk no recibido en el constructor.\n";
     }
+    
+    # El panel se adueña de su color de fondo (TradingView Style)
+    $self->{canvas}->configure(-bg => '#131722');
 
-    # RESOLUCIÓN CUELLO DE BOTELLA - LAYOUT VISUAL ESTÁTICO/ACOTADO
-    # El panel del indicador va abajo y no debe competir agresivamente en altura con el precio.
-    # - fill => 'x'    : Se estira completamente a lo ancho.
-    # - expand => 0    : No crece desproporcionadamente de alto al estirar la ventana principal.
+    # Resolución layout visual elástico
     $self->{canvas}->pack(
         -side   => 'bottom',
         -fill   => 'both',
@@ -74,11 +74,27 @@ sub get_y_range {
     # 1. Sincronizar la ventana de datos con el motor central de Erick
     my ($start, $end) = $self->{engine}->compute_window();
     
-    # 2. Acceder al manejador de indicadores técnicos para extraer el arreglo del ATR de Josué
+    #2. Recuperar el arreglo de valores del ATR de forma ultra-segura
     my $atr_values = [];
     if (defined $self->{engine}->{indicator_manager}) {
-        $atr_values = $self->{engine}->{indicator_manager}->get_atr_values() || [];
+        
+        # Usamos el método oficial 'get'
+        my $atr_indicator = $self->{engine}->{indicator_manager}->get('ATR');
+        
+        # Validación estricta de tipos para evitar que un número falso rompa el programa
+        if (defined $atr_indicator) {
+            if (ref($atr_indicator) eq 'ARRAY') {
+                $atr_values = $atr_indicator;
+            } elsif (ref($atr_indicator) eq 'HASH') {
+                $atr_values = $atr_indicator->{values} || [];
+            }
+            # Si ref() devuelve vacío, significa que es un string o número simple (como el '2').
+            # En ese caso, lo ignoramos y dejamos $atr_values vacío.
+        }
     }
+    
+    # Si sigue vacío, lo inicializamos para evitar errores
+    $atr_values //= [];
 
     # Si no existen cálculos aún en el sistema, devolvemos un rango por defecto plano para el indicador
     if (scalar @$atr_values == 0) {
@@ -166,12 +182,27 @@ sub render {
     my $scale = $self->set_scale();
     my $canvas_height = $self->{canvas}->Height();
 
-    # 2. Recuperar el arreglo completo de valores del ATR desde el gestor de Josué
+    #2. Recuperar el arreglo de valores del ATR de forma ultra-segura
     my $atr_values = [];
     if (defined $self->{engine}->{indicator_manager}) {
-        $atr_values = $self->{engine}->{indicator_manager}->get_atr_values() || [];
+        
+        # Usamos el método oficial 'get'
+        my $atr_indicator = $self->{engine}->{indicator_manager}->get('ATR');
+        
+        # Validación estricta de tipos para evitar que un número falso rompa el programa
+        if (defined $atr_indicator) {
+            if (ref($atr_indicator) eq 'ARRAY') {
+                $atr_values = $atr_indicator;
+            } elsif (ref($atr_indicator) eq 'HASH') {
+                $atr_values = $atr_indicator->{values} || [];
+            }
+            # Si ref() devuelve vacío, significa que es un string o número simple (como el '2').
+            # En ese caso, lo ignoramos y dejamos $atr_values vacío.
+        }
     }
-    return if scalar @$atr_values == 0;
+    
+    # Si sigue vacío, lo inicializamos para evitar errores
+    $atr_values //= [];
 
     # 3. Obtener el rango vertical de volatilidad visible para aplicar la fórmula temporal
     my ($atr_min, $atr_max) = $self->get_y_range();
