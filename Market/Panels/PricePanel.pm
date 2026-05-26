@@ -221,30 +221,42 @@ sub render {
 
 =head2 _init_crosshair_objects
 
-Inicializa los objetos gráficos del crosshair (líneas vertical y horizontal) 
-dentro del canvas de precios y almacena sus IDs para optimizar el rendimiento.
-
+Inicializa los objetos gráficos del crosshair (líneas, cajas de fondo y textos) 
+dentro del canvas y almacena sus IDs para optimizar el rendimiento.
 =cut
 
 sub _init_crosshair_objects {
     my ($self) = @_;
 
-    my $crosshair_color = '#555555';
+    # Aquí controlas los colores:
+    my $crosshair_color = '#555555'; # Color de la línea de la cruz
+    
+    # --- COLORES DE LAS CAJITAS ---
+    my $label_bg_color  = '#659c39'; # <-- CAMBIA ESTE para el fondo (TradingView usa azul/gris muy oscuro)
+    my $label_txt_color = '#1e15a8'; # <-- CAMBIA ESTE para el texto (Blanco)
 
-    # Creamos la línea vertical oculta/en cero al inicio
+    # 1. Las líneas (Ya las tenía Dome)
     $self->{crosshair_v_id} = $self->{canvas}->createLine(
-        0, 0, 0, 0,
-        -fill => $crosshair_color,
-        -dash => '.',
-        -tags => ['crosshair_internal']
+        0, 0, 0, 0, -fill => $crosshair_color, -dash => '.', -tags => ['crosshair_internal']
+    );
+    $self->{crosshair_h_id} = $self->{canvas}->createLine(
+        0, 0, 0, 0, -fill => $crosshair_color, -dash => '.', -tags => ['crosshair_internal']
     );
 
-    # Creamos la línea horizontal oculta/en cero al inicio
-    $self->{crosshair_h_id} = $self->{canvas}->createLine(
-        0, 0, 0, 0,
-        -fill => $crosshair_color,
-        -dash => '.',
-        -tags => ['crosshair_internal']
+    # 2. Etiqueta X (Tiempo) - Abajo
+    $self->{crosshair_x_bg} = $self->{canvas}->createRectangle(
+        0, 0, 0, 0, -fill => $label_bg_color, -outline => $label_txt_color, -state => 'hidden', -tags => ['crosshair_internal']
+    );
+    $self->{crosshair_x_txt} = $self->{canvas}->createText(
+        0, 0, -fill => $label_txt_color, -font => ['Helvetica', 16, 'bold'], -state => 'hidden', -tags => ['crosshair_internal']
+    );
+
+    # 3. Etiqueta Y (Precio/Volatilidad) - Derecha
+    $self->{crosshair_y_bg} = $self->{canvas}->createRectangle(
+        0, 0, 0, 0, -fill => $label_bg_color, -outline => $label_txt_color, -state => 'hidden', -tags => ['crosshair_internal']
+    );
+    $self->{crosshair_y_txt} = $self->{canvas}->createText(
+        0, 0, -fill => $label_txt_color, -font => ['Helvetica', 16, 'bold'], -state => 'hidden', -tags => ['crosshair_internal']
     );
 
     return;
@@ -252,14 +264,7 @@ sub _init_crosshair_objects {
 
 =head2 draw_crosshair
 
-Actualiza dinámicamente las coordenadas de las líneas de la cruz existentes.
-Controla la visibilidad de la línea horizontal según el foco del panel.
-
-Atributos de entrada:
-  - $x         : Coordenada X física del ratón.
-  - $y         : Coordenada Y física del ratón (local a este canvas).
-  - $is_active : Booleano (1 o 0) que indica si el mouse está sobre este panel.
-
+Actualiza las coordenadas de la cruz y de las etiquetas flotantes (precio y tiempo).
 =cut
 
 sub draw_crosshair {
@@ -267,24 +272,93 @@ sub draw_crosshair {
 
     my $canvas_height = $self->{canvas}->Height();
     my $canvas_width  = $self->{canvas}->Width();
+    my $scale         = $self->{scale};
 
-    return if $canvas_width <= 1 || $canvas_height <= 1;
+    return if $canvas_width <= 1 || $canvas_height <= 1 || !defined $scale;
 
-    # 1. Mover la línea vertical (Siempre visible y sincronizada en X)
+    # --- 1. MOVER LÍNEA VERTICAL Y ETIQUETA DE TIEMPO (Eje X) ---
     if (defined $self->{crosshair_v_id}) {
+        # A. Mover la línea vertical
         $self->{canvas}->coords($self->{crosshair_v_id}, $x, 0, $x, $canvas_height);
-    }
+        
+       # B. Lógica del Tiempo (Erick's logic)
+        my ($start_index, $end_index) = $self->{engine}->compute_window();
+        my $indice_local = $scale->x_to_index($x);
+        
+        # Sumamos el inicio global al índice local de la pantalla
+        my $indice_global = $start_index + $indice_local;
+        my $velas = $self->{engine}->{market_data}->get_data();
 
-    # 2. Mover la línea horizontal (Solo se posiciona si el panel está activo)
-    if (defined $self->{crosshair_h_id}) {
-        if ($is_active) {
-            $self->{canvas}->coords($self->{crosshair_h_id}, 0, $y, $canvas_width, $y);
-        } else {
-            # Si el panel no está activo, "escondemos" la línea horizontal enviándola a coordenadas cero
-            $self->{canvas}->coords($self->{crosshair_h_id}, 0, 0, 0, 0);
+        if ($indice_global >= 0 && $indice_global < scalar(@$velas)) {
+            my $ts = $velas->[$indice_global]->{time} || "";
+            
+            # --- NUEVO FORMATO DE TIEMPO (TRADINGVIEW STYLE) ---
+            my $etiqueta_tiempo = $ts; # Fallback por si la fecha viene rara
+            
+            # Extraemos las partes de la fecha (Ej: 2026-05-26T12:00)
+            if (my ($anio, $mes, $dia, $hora) = $ts =~ /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2})/) {
+                # Mapeamos el número de mes a su abreviatura en inglés
+                my @nombres_meses = qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec);
+                my $nombre_mes = $nombres_meses[$mes - 1]; # Restamos 1 porque los arreglos empiezan en 0
+                
+                # Armamos la cadena final (Ej: "26 May 2026 12:00")
+                # Si quieres quitar el año, solo borra el "$anio " de la línea de abajo
+                $etiqueta_tiempo = "$dia $nombre_mes $anio $hora";
+            }
+            # ---------------------------------------------------
+
+            # Posicionamos el texto en el margen inferior (franja gris)
+            my $y_franja = $canvas_height - 12;
+            $self->{canvas}->coords($self->{crosshair_x_txt}, $x, $y_franja);
+            
+            # Inyectamos nuestra nueva etiqueta de tiempo formateada
+            $self->{canvas}->itemconfigure($self->{crosshair_x_txt}, -text => $etiqueta_tiempo, -state => 'normal');
+
+            # Creamos el fondo negro envolviendo el texto (bbox = Bounding Box)
+            my @bbox = $self->{canvas}->bbox($self->{crosshair_x_txt});
+            if (@bbox) {
+                # [x1-padding, y1-padding, x2+padding, y2+padding]
+                $self->{canvas}->coords($self->{crosshair_x_bg}, $bbox[0]-6, $bbox[1]-2, $bbox[2]+6, $bbox[3]+2);
+                $self->{canvas}->itemconfigure($self->{crosshair_x_bg}, -state => 'normal');
+                
+                # 'raise' pone los elementos por encima de las velas para que no se tapen
+                $self->{canvas}->raise($self->{crosshair_x_bg});
+                $self->{canvas}->raise($self->{crosshair_x_txt});
+            }
         }
     }
-    
+
+    # --- 2. MOVER LÍNEA HORIZONTAL Y ETIQUETA DE PRECIO (Eje Y) ---
+    if (defined $self->{crosshair_h_id}) {
+        if ($is_active) {
+            # A. Mover la línea horizontal
+            $self->{canvas}->coords($self->{crosshair_h_id}, 0, $y, $canvas_width, $y);
+            
+            # B. Lógica del Precio/Valor usando las escalas de Ricardo
+            my $valor_y = $scale->y_to_value($y);
+            my $valor_fmt = sprintf("%.2f", $valor_y); # Forzamos 2 decimales
+
+            # Posicionamos el texto a la derecha (Margen derecho de Ricardo = 65px)
+            my $x_precio = $canvas_width - 32; 
+            
+            $self->{canvas}->coords($self->{crosshair_y_txt}, $x_precio, $y);
+            $self->{canvas}->itemconfigure($self->{crosshair_y_txt}, -text => $valor_fmt, -state => 'normal');
+
+            my @bbox_y = $self->{canvas}->bbox($self->{crosshair_y_txt});
+            if (@bbox_y) {
+                $self->{canvas}->coords($self->{crosshair_y_bg}, $bbox_y[0]-6, $bbox_y[1]-2, $bbox_y[2]+6, $bbox_y[3]+2);
+                $self->{canvas}->itemconfigure($self->{crosshair_y_bg}, -state => 'normal');
+                
+                $self->{canvas}->raise($self->{crosshair_y_bg});
+                $self->{canvas}->raise($self->{crosshair_y_txt});
+            }
+        } else {
+            # Si el ratón sale del panel, escondemos la línea y sus etiquetas
+            $self->{canvas}->coords($self->{crosshair_h_id}, 0, 0, 0, 0);
+            $self->{canvas}->itemconfigure($self->{crosshair_y_bg}, -state => 'hidden');
+            $self->{canvas}->itemconfigure($self->{crosshair_y_txt}, -state => 'hidden');
+        }
+    }
     return;
 }
 
@@ -321,8 +395,8 @@ sub draw_time_axis {
             $self->{canvas}->createText(
                 $x, $y_pos,
                 -text => $hora,
-                -fill => '#a0a0a0', # Color gris claro para textos secundarios
-                -font => ['Helvetica', 9]
+                -fill => '#c43f3f', # Color gris claro para textos secundarios
+                -font => ['Helvetica', 21]
             );
         }
         $posicion_relativa++;
