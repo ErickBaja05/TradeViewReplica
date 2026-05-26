@@ -50,6 +50,11 @@ sub new {
         # Contenedores para las instancias de los paneles independientes
         price_panel       => undef,
         atr_panel         => undef,
+
+        # Estado de Escalas (Día 6)
+        auto_scale        => 1,      # 1 = Modo Automático (Default), 0 = Modo Manual
+        manual_y_max      => 100,    # Límite superior manual (Dome lo actualizará)
+        manual_y_min      => 0,      # Límite inferior manual (Dome lo actualizará)
     };
 
     bless $self, $class;
@@ -245,14 +250,29 @@ sub bind_events {
     # En sistemas basados en Linux/X11, la rueda del ratón no se captura siempre
     # con el evento '<MouseWheel>', sino como clics de los botones físicos 4 y 5.
     
+   # --- 1. CONTROL DE ZOOM CON LA RUEDA DEL RATÓN ---
+    
     # Rueda hacia arriba -> Acercar (Zoom In: reducir barras visibles)
     $mw->Tk::bind('<Button-4>', sub { 
-        $self->horizontal_zoom(1); 
+        my $widget = shift; # 1. Capturamos el widget físico que recibió el scroll
+        my $e = $widget->XEvent; # 2. Le pedimos su evento
+        
+        if ($e) { # 3. Si el evento existe, operamos de forma segura
+            # El modificador 's' (State) guarda qué teclas adicionales se estaban presionando
+            my $has_ctrl = ($e->s & 4) ? 1 : 0; 
+            $self->horizontal_zoom(1, $e->x, $has_ctrl); 
+        }
     });
 
     # Rueda hacia abajo -> Alejar (Zoom Out: aumentar barras visibles)
     $mw->Tk::bind('<Button-5>', sub { 
-        $self->horizontal_zoom(-1); 
+        my $widget = shift;
+        my $e = $widget->XEvent;
+        
+        if ($e) {
+            my $has_ctrl = ($e->s & 4) ? 1 : 0;
+            $self->horizontal_zoom(-1, $e->x, $has_ctrl); 
+        }
     });
 
 
@@ -285,10 +305,117 @@ sub bind_events {
 }
 
 
-sub _vertical_drag           { my ($self, $dy) = @_; return; }
-sub vertical_zoom            { my ($self, $factor) = @_; return; }
-sub set_timeframe            { my ($self, $tf) = @_; return; }
-sub compute_intraday_labels  { my ($self) = @_; return; }
+=head2 compute_intraday_labels
+
+Calcula de forma dinámica qué etiquetas de tiempo deben dibujarse para evitar 
+el amontonamiento, resaltando los inicios de día (Velas Ancla).
+=cut
+
+sub compute_intraday_labels {
+    my ($self) = @_;
+    
+    my ($start, $end) = $self->compute_window();
+    my $velas = $self->{market_data}->get_data();
+    my @etiquetas_visibles;
+
+    # 1. Calculamos la densidad dinámica: ¿Cada cuántas velas dibujamos?
+    my $visibles = $self->{visible_bars};
+    my $salto = 1;
+    $salto = 5  if $visibles > 30;
+    $salto = 10 if $visibles > 100;
+    $salto = 50 if $visibles > 500;
+
+    my $ultimo_dia_visto = "";
+    my $posicion_relativa = 0;
+
+    for my $i ($start .. $end) {
+        my $vela = $velas->[$i];
+        last unless $vela;
+        my $ts = $vela->{time} || "";
+
+        # Extraer solo la fecha (YYYY-MM-DD) para detectar cambios de día
+        my ($dia_actual) = $ts =~ /^(\d{4}-\d{2}-\d{2})/;
+        $dia_actual //= "";
+
+        # REGLA DEL PROFESOR: Detectar inicio de un nuevo día (Vela Ancla)
+        my $es_cambio_dia = 0;
+        if ($dia_actual ne $ultimo_dia_visto && $ultimo_dia_visto ne "") {
+            $es_cambio_dia = 1;
+        }
+        $ultimo_dia_visto = $dia_actual if $dia_actual;
+
+        # Condición para dibujar: O es un cambio de día, o toca por la densidad
+        if ($es_cambio_dia || $posicion_relativa % $salto == 0) {
+            push @etiquetas_visibles, {
+                indice_relativo => $posicion_relativa,
+                timestamp       => $ts,
+                es_cambio_dia   => $es_cambio_dia
+            };
+        }
+        $posicion_relativa++;
+    }
+
+    return \@etiquetas_visibles;
+}
+
+=head2 _vertical_drag
+
+Ejecuta el paneo vertical (arrastrar la escala de precios).
+Al invocar esto, el gráfico rompe el Auto-Scale y pasa a Modo Manual.
+=cut
+
+sub _vertical_drag {
+    my ($self, $dy) = @_;
+    
+    # ¡Rompemos el modo automático!
+    $self->{auto_scale} = 0;
+
+    # Calculamos el desplazamiento basado en una altura teórica de pantalla (400px)
+    my $rango = $self->{manual_y_max} - $self->{manual_y_min};
+    my $desplazamiento = ($dy / 400) * $rango;
+
+    # Movemos los límites de la ventana manual
+    $self->{manual_y_max} += $desplazamiento;
+    $self->{manual_y_min} += $desplazamiento;
+
+    $self->request_render();
+}
+
+=head2 vertical_zoom
+
+Expande o contrae la escala de precios. Cambia a Modo Manual automáticamente.
+=cut
+
+sub vertical_zoom {
+    my ($self, $factor) = @_;
+    
+    $self->{auto_scale} = 0;
+
+    # factor = 1 (acercar/estirar), factor = -1 (alejar/comprimir)
+    my $rango = $self->{manual_y_max} - $self->{manual_y_min};
+    my $cambio = $rango * 0.05 * $factor; # 5% de zoom por click
+
+    # Ajustamos los márgenes (El techo sube, el piso baja)
+    $self->{manual_y_max} += $cambio;
+    $self->{manual_y_min} -= $cambio;
+
+    $self->request_render();
+}
+
+=head2 set_timeframe
+
+Orquesta el cambio de temporalidad en la capa de datos y resetea la vista.
+=cut
+
+sub set_timeframe {
+    my ($self, $tf) = @_;
+    
+    # Asumiendo que Josué programará una función para cambiar el arreglo activo
+    # $self->{market_data}->set_active_timeframe($tf) if $self->{market_data}->can('set_active_timeframe');
+    
+    # Volvemos al presente y recuperamos el Auto-Scale
+    $self->reset_view(); 
+}
 
 =head2 on_mouse_move
 
@@ -339,8 +466,72 @@ sub draw_crosshair_all {
 }
 
 
-sub horizontal_zoom          { my ($self, $delta) = @_; return; }
-sub reset_view               { my ($self) = @_; return; }
+=head2 horizontal_zoom
+
+Controla el nivel de zoom de la gráfica ajustando la cantidad de barras visibles.
+Implementa el requerimiento de "Ancla a la derecha" por defecto, y "Ancla al ratón" si hay Ctrl.
+=cut
+
+sub horizontal_zoom {
+    my ($self, $delta, $mouse_x, $has_ctrl) = @_;
+
+    my $current_bars = $self->{visible_bars} || 100;
+    
+    # 1. Calcular la intensidad del zoom (10% de la pantalla actual por cada "click" de rueda)
+    my $zoom_factor = 0.10;
+    my $bars_change = $current_bars * $zoom_factor;
+    $bars_change = 1 if $bars_change < 1; # Mínimo cambiar de 1 en 1
+    
+    # Si delta es positivo (acercar), reducimos las barras visibles. Si es negativo (alejar), aumentamos.
+    my $new_bars = $current_bars + ($delta > 0 ? -$bars_change : $bars_change);
+    
+    # 2. REGLA DEL PROFESOR: Mínimo número de velas = 2
+    $new_bars = 2 if $new_bars < 2;
+
+    # 3. Lógica de Anclaje
+    if ($has_ctrl && defined $mouse_x && defined $self->{price_panel}) {
+        # MODO CTRL: El zoom ocurre desde el centro del ratón.
+        # Calculamos el porcentaje de la pantalla donde está el cursor (ej. 0.5 es la mitad)
+        my $canvas_width = $self->{price_canvas}->Width() || 1;
+        my $porcentaje_pantalla = $mouse_x / $canvas_width;
+        
+        # Ajustamos el offset para que la vela bajo el ratón no se desplace visualmente
+        my $barras_perdidas = $current_bars - $new_bars;
+        
+        # Si perdemos 10 barras de visión, y el ratón está en el 80% (0.8) de la pantalla,
+        # desplazamos el offset en 8 barras para compensar.
+        $self->{offset} += ($barras_perdidas * (1 - $porcentaje_pantalla));
+    } else {
+        # MODO DEFAULT: Si no hay Ctrl, el offset no cambia.
+        # Al no cambiar el offset, nuestra arquitectura por defecto ancla la vista 
+        # a la última vela de la derecha, exactamente como pidió el profesor.
+    }
+
+    # Actualizamos el estado y solicitamos re-dibujar
+    $self->{visible_bars} = $self->round($new_bars);
+    $self->request_render();
+}
+
+=head2 reset_view
+
+Restaura la vista del gráfico a su estado original "por defecto" (TradingView Auto-Fit).
+=cut
+
+sub reset_view {
+    my ($self) = @_;
+    
+    # 1. Restaurar zoom por defecto
+    $self->{visible_bars} = 100; 
+    
+    # 2. Restaurar scroll al presente
+    $self->{offset} = 0;   
+    
+    # 3. Preparación para el Día 6 (Reactivar Auto-Scale)
+    $self->{auto_scale} = 1; 
+
+    # 4. Redibujar todo
+    $self->request_render();
+}
 
 
 =head2 get_all_timestamps
