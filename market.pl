@@ -44,30 +44,37 @@ my $chart_engine = Market::ChartEngine->new(
 # 3. Tareas secuenciales requeridas por el documento de requerimientos
 # Tarea A: Invoca la lectura de los datos (Día 1: Datos Mock/Simulados básicos)
 
-# Tarea A: Invoca la lectura de los datos (Mock de 150 velas)
-my $precio_actual = 24000;
+# =========================================================================
+# Tarea A: Lectura del archivo CSV real e inyección de datos (Día 4)
+# =========================================================================
 
-#$market_data->get_data(); DESCOMENTAR Y BORRAR EL BUCLE FOR CUANDO EN GET DATA YA SE HAYA IMPLEMENTADO LA LECTURA DE DATOS REALES DESDE ARCHIVO O API. ESTE BUCLE SOLO SIRVE PARA SIMULAR DATOS EN ESTA FASE INICIAL.
+# Abrimos el archivo de forma segura. (Asegúrate de tener el archivo datos.csv en la misma carpeta)
+my $archivo_csv = 'datos.csv';
+open(my $fh, '<', $archivo_csv) or die "No se pudo abrir el archivo '$archivo_csv' $!\n";
 
-for my $i (0 .. 150) {
-    # Generamos variaciones aleatorias para simular el mercado
-    my $open  = $precio_actual + (rand(20) - 10);
-    my $close = $open + (rand(20) - 10);
-    my $high  = ($open > $close ? $open : $close) + rand(10);
-    my $low   = ($open < $close ? $open : $close) - rand(10);
+# Descartamos la primera línea si el CSV tiene encabezados (Time, Open, High, Low, Close, Volume)
+my $encabezado = <$fh>;
+
+# Leemos línea por línea de forma eficiente (No satura la RAM de golpe)
+while (my $linea = <$fh>) {
+    chomp $linea;
     
+    # Separamos los valores por comas
+    my ($time, $open, $high, $low, $close, $volume) = split(',', $linea);
+    
+    # Inyectamos la vela directamente al contenedor de Josué
     $market_data->add_candle({
-        time   => "2026-04-01T00:00:$i",
+        time   => $time,
         open   => $open,
         high   => $high,
         low    => $low,
         close  => $close,
-        volume => int(rand(100)) + 10
+        volume => $volume
     });
-    
-    # Actualizamos el precio base para la siguiente vela
-    $precio_actual = $close;
 }
+
+close($fh);
+print "Datos del CSV cargados exitosamente. Total de velas: " . $market_data->size() . "\n";
 
 #Tarea B: Invoca la actualización del mercado entre distintas temporalidades
 $market_data->build_timeframes();
