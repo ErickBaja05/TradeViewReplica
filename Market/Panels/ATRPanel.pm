@@ -142,19 +142,23 @@ Retorna:
 sub set_scale {
     my ($self) = @_;
 
-    # 1. Calcular el rango dinámico de fluctuación del indicador en la ventana actual
     my ($min_y, $max_y) = $self->get_y_range();
-    
-    # 2. Obtener dimensiones físicas del Canvas
     my $width  = $self->{canvas}->Width();
     my $height = $self->{canvas}->Height();
 
-    # 3. Re-instanciar las escalas mapeando los límites específicos del ATR
+    my ($start_index, $end_index) = $self->{engine}->compute_window();
+
+    # EL SECRETO DEL ANCLAJE TRADINGVIEW:
+    # Calculamos el inicio teórico (incluso si es negativo) para que Ricardo 
+    # siempre ancle la última vela ($end_index) al margen derecho.
+    my $visible_bars = $self->{engine}->{visible_bars} || 100;
+    my $scale_offset = $end_index - $visible_bars + 1;
+
     $self->{scale} = Market::Panels::Scales->new(
         width        => $width,
         height       => $height,
-        visible_bars => $self->{engine}->{visible_bars},
-        offset       => $self->{engine}->{offset},
+        visible_bars => $visible_bars,
+        offset       => $scale_offset, # Le pasamos el offset teórico, no el start_index
         y_min        => $min_y,
         y_max        => $max_y,
     );
@@ -208,14 +212,10 @@ sub render {
     my $rango_y = $atr_max - $atr_min;
     $rango_y = 1.0 if $rango_y == 0;
 
-   # 4. Sincronizar índices de iteración con la ventana del motor central de Erick
+   # 4. Sincronizar índices de iteración
     my ($start_index, $end_index) = $self->{engine}->compute_window();
-
-    # Variables de control para conectar el punto anterior con el punto actual (Línea continua)
-    my ($last_x, $last_y);
-
     my $i = $start_index;
-    my $posicion_relativa = 0; # NUEVO: Controlador local para la pantalla
+    my ($last_x, $last_y);
 
     for my $candle (@$data_slice) {
         last if $i > $end_index;
@@ -223,33 +223,29 @@ sub render {
         my $atr_val = $atr_values->[$i];
         
         if (defined $atr_val) {
-            # A. SOLUCIÓN AL CUELLO DE BOTELLA DEL SCROLL:
-            # Sumamos el offset actual para neutralizar la resta en el módulo de Ricardo
-            my $offset_actual = $self->{engine}->{offset} || 0;
-            my $x_current = $scale->index_to_center_x($posicion_relativa + $offset_actual);
+            # X e Y usando únicamente los métodos matemáticos oficiales de Ricardo
+            my $x_current = $scale->index_to_center_x($i);
+            my $y_current = $scale->value_to_y($atr_val);
 
-            # B. Aplicar el parche matemático para el eje Y del indicador
-            my $y_current = $canvas_height - (($atr_val - $atr_min) / $rango_y) * $canvas_height;
-
-            # C. Si existe un punto previo registrado, trazamos el segmento de línea intermedia
+            # Trazamos el segmento de línea
             if (defined $last_x && defined $last_y) {
                 $self->{canvas}->createLine(
                     $last_x, $last_y,
                     $x_current, $y_current,
-                    -fill  => '#2196f3', # Azul brillante estilo TradingView
+                    -fill  => '#2196f3', 
                     -width => 2
                 );
             }
-
-            # D. Actualizar el rastro del último punto dibujado
             $last_x = $x_current;
             $last_y = $y_current;
         }
         $i++;
-        $posicion_relativa++; # Aumentamos la posición relativa para la siguiente iteración
     }
 
     $self->init_crosshair();
+    
+    # 2. Dibujar el último valor visible del indicador
+    $self->render_last_visible_value($data_slice, $scale, $atr_values);
 }
 
 =head2 init_crosshair
@@ -311,6 +307,61 @@ sub draw_crosshair {
     }
 
     return;
+}
+
+=head2 render_last_visible_value
+
+Dibuja una línea horizontal punteada y una caja resaltada a la derecha
+con el valor del indicador ATR de la última vela visible en pantalla.
+=cut
+
+sub render_last_visible_value {
+    my ($self, $data_slice, $scale, $atr_values) = @_;
+
+    # Obtenemos los límites actuales para saber cuál es el índice final
+    my ($start_index, $end_index) = $self->{engine}->compute_window();
+    
+    # Extraemos el último valor de volatilidad de ese índice
+    my $last_atr_val = $atr_values->[$end_index];
+    return unless defined $last_atr_val;
+
+    # Calculamos la altura en píxeles usando la escala de Ricardo
+    my $y = $scale->value_to_y($last_atr_val);
+    my $canvas_width = $self->{canvas}->Width();
+    
+    my $color = '#2196f3'; # Azul oficial del indicador ATR
+
+    # 1. Línea horizontal punteada
+    $self->{canvas}->createLine(
+        0, $y,
+        $canvas_width, $y,
+        -fill => $color,
+        -dash => '.',
+        -tags => ['last_atr_indicator']
+    );
+
+    # 2. Etiqueta de valor a la derecha ($canvas_width - 32)
+    my $x_pos = $canvas_width - 32;
+    my $valor_fmt = sprintf("%.4f", $last_atr_val); # 4 decimales para indicadores
+
+    my $txt_id = $self->{canvas}->createText(
+        $x_pos, $y,
+        -text => $valor_fmt,
+        -fill => '#ffffff',
+        -font => ['Helvetica', 10, 'bold'],
+        -tags => ['last_atr_indicator']
+    );
+
+    my @bbox = $self->{canvas}->bbox($txt_id);
+    if (@bbox) {
+        my $bg_id = $self->{canvas}->createRectangle(
+            $bbox[0]-6, $bbox[1]-2, $bbox[2]+6, $bbox[3]+2,
+            -fill    => $color,
+            -outline => $color,
+            -tags    => ['last_atr_indicator']
+        );
+        $self->{canvas}->lower($bg_id, $txt_id);
+    }
 }
 
 1;
