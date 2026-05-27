@@ -205,18 +205,106 @@ sub get_timestamp {
    return undef;
 }
 
+=head2 build_tf_candles()
+
+Subrutina encargada de comprimir n velas 
+de 1 minuto en una sola vela de mayor temporalidad, respetando las reglas de agregación OHLCV
+
+=cut
 
 sub build_tf_candles {
    my ($self, $tf) = @_;
-   # TODO
+# Determinamos el tamaño del bloque según el string de la temporalidad
+   my $block_size = 0;
+   if    ($tf eq '5m')  { $block_size = 5; }
+   elsif ($tf eq '15m') { $block_size = 15; }
+   else                 { return; } # Si es '1m' o un parámetro inválido, salimos
+
+   my $candles_1m = $self->{candles};
+   my $total_candles = scalar @{$candles_1m};
+
+   # Limpiamos el contenedor destino antes de realizar la carga masiva
+   $self->{data}->{$tf} = [];
+
+   # Recorremos el arreglo base de 1m en saltos según el tamaño del bloque
+   for (my $i = 0; $i < $total_candles; $i += $block_size) {
+      
+      # Calculamos el índice final del bloque controlando el desborde del arreglo
+      my $end = $i + $block_size - 1;
+      if ($end >= $total_candles) {
+         $end = $total_candles - 1;
+      }
+
+      # Aplicamos las reglas algebraicas financieras para la vela compresa
+      my $time_val  = $candles_1m->[$i]->{time};     # El tiempo inicial del bloque
+      my $open_val  = $candles_1m->[$i]->{open};     # El open de la primera vela
+      my $close_val = $candles_1m->[$end]->{close};   # El close de la última vela
+      
+      # Inicializamos los extremos con los valores de la primera vela del grupo
+      my $high_val  = $candles_1m->[$i]->{high};
+      my $low_val   = $candles_1m->[$i]->{low};
+      my $vol_val   = 0;
+
+      # Bucle interno para extraer el máximo High, mínimo Low y la sumatoria de Volumen
+      for my $j ($i .. $end) {
+         my $current = $candles_1m->[$j];
+         $high_val = $current->{high} if $current->{high} > $high_val;
+         $low_val  = $current->{low}  if $current->{low} < $low_val;
+         $vol_val += $current->{volume};
+      }
+
+      # Inserción limpia de la estructura estructurada en el cajón correspondiente
+      push @{$self->{data}->{$tf}}, {
+         time   => $time_val,
+         open   => 0.0 + $open_val,   # Forzamos contexto numérico flotante
+         high   => 0.0 + $high_val,
+         low    => 0.0 + $low_val,
+         close  => 0.0 + $close_val,
+         volume => 0.0 + $vol_val
+      };
+   }
 }
+
+=head2 build_timeframes()
+
+Construye las temporalidades superiores (5m y 15m) a partir de la base 1m.
+
+=cut
+
 sub build_timeframes {
    my ($self) = @_;
-   # TODO
+   # 1. Sincronización de seguridad de la temporalidad base (1m)
+   if (defined $self->{candles} && scalar @{$self->{candles}} > 0) {
+      $self->{data}->{'1m'} = $self->{candles};
+   } elsif (defined $self->{data}->{'1m'} && scalar @{$self->{data}->{'1m'}} > 0) {
+      $self->{candles} = $self->{data}->{'1m'};
+   }
+
+   # Control de fallos: Si no hay datos cargados, no hay nada que preprocesar
+   if (!defined $self->{candles} || scalar @{$self->{candles}} == 0) {
+      warn "[MarketData Error] | Build_timeframes: No se encontraron datos base en 'candles' para procesar.\n";
+      return $self;
+   }
+
+   # 2. Construcción previa y secuencial de las temporalidades superiores
+   $self->build_tf_candles('5m');
+   $self->build_tf_candles('15m');
+
+   return $self;
 }
 sub set_timeframe {
    my ($self, $tf) = @_;
-   # TODO
+   # Validación de seguridad: Comprobamos que el parámetro no sea nulo 
+   # y que exista como una clave válida dentro de nuestro hash estructurado 'data'
+   if (defined $tf && exists $self->{data}->{$tf}) {
+      $self->{timeframe} = $tf;
+   } else {
+      # Si la interfaz manda algo inválido (ej: '1h' o undef), emitimos una advertencia
+      warn "[MarketData Error] | SET_TIMEFRAME : La temporalidad '" . ($tf // 'undef') . "' no está soportada.\n";
+   }
+
+   # Retornar $self permite hacer cosas como: $market->set_timeframe('5m')->get_data();
+   return $self;
 }
 
 =head2 merge_delta_row()
