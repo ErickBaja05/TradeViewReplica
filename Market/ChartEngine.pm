@@ -226,68 +226,86 @@ sub bind_all_canvas {
         my $widget = shift; my $e = $widget->XEvent; $self->on_mouse_move($e) if $e; 
     });
 
-    # =========================================================================
-    # LOGICA DE ARRASTRE HORIZONTAL ESTILO TRADINGVIEW (PANNING)
+   # =========================================================================
+    # LÓGICA DE ARRASTRE 2D (PANNING HORIZONTAL Y VERTICAL)
     # =========================================================================
     
     # Recorremos ambos lienzos para aplicarles la misma regla de arrastre
     for my $canvas ($price_cv, $atr_cv) {
         
-        # A. Cuando el usuario hace CLIC IZQUIERDO, congelamos el punto de inicio X
+        # A. Clic Inicial: Congelamos el punto de origen en 2D (X e Y)
         $canvas->Tk::bind('<Button-1>', sub {
             my $widget = shift;
             my $e = $widget->XEvent;
             if ($e) {
-                # Guardamos temporalmente el píxel X actual en el motor
                 $self->{last_drag_x} = $e->x;
+                $self->{last_drag_y} = $e->y; # NUEVO: Guardar el origen Y
             }
         });
 
-        # B. Cuando el usuario MUEVE EL RATÓN CON EL CLIC PRESIONADO
+        # B. Movimiento Sostenido: Calculamos los desplazamientos simultáneos
         $canvas->Tk::bind('<B1-Motion>', sub {
             my $widget = shift;
             my $e = $widget->XEvent;
             
             # Validaciones de seguridad
-            return unless $e && defined $self->{last_drag_x};
+            return unless $e && defined $self->{last_drag_x} && defined $self->{last_drag_y};
             return unless defined $self->{price_panel} && defined $self->{price_panel}->{scale};
 
-            # Calcular la diferencia en píxeles (Delta X)
             my $delta_x = $e->x - $self->{last_drag_x};
+            my $delta_y = $e->y - $self->{last_drag_y}; # NUEVO: Movimiento Y
+            
+            my $needs_render = 0;
 
-            # Le pedimos al módulo de Ricardo cuánto mide el ancho real de una sola vela en píxeles
+            # --- 1. LÓGICA DE ARRASTRE HORIZONTAL (TIEMPO) ---
             my $scale = $self->{price_panel}->{scale};
             my $plot_width = $scale->{width} - $scale->{margin_left} - $scale->{margin_right};
             my $candle_width = ($plot_width / $self->{visible_bars}) || 1;
-
-            # Traducimos los píxeles arrastrados a cantidad de velas
             my $velas_desplazadas = int($delta_x / $candle_width);
 
-            # Si el movimiento es lo suficientemente grande como para saltar al menos una vela
             if ($velas_desplazadas != 0) {
                 my $market_data = $self->{market_data};
                 my $total_candles = $market_data ? $market_data->size() : 0;
-
-                # Si arrastramos a la izquierda (delta negativo), avanzamos al pasado (offset aumenta)
-                # Si arrastramos a la derecha (delta positivo), volvemos al presente (offset disminuye)
+                
+                # Invertido: a la derecha (positivo) viaja al pasado.
                 my $nuevo_offset = $self->{offset} + $velas_desplazadas;
 
-                # Control estricto de fronteras para no salirnos de la base de datos de Josué
                 if ($nuevo_offset >= 0 && $nuevo_offset < $total_candles - $self->{visible_bars}) {
                     $self->{offset} = $nuevo_offset;
-                    
-                    # ACTUALIZACIÓN CRUCIAL: Reseteamos el punto de origen al píxel actual 
-                    # para que el arrastre sea continuo y suave, no un salto infinito brusco.
-                    $self->{last_drag_x} = $e->x;
-                    
-                    $self->request_render();
+                    $self->{last_drag_x} = $e->x; # Reset de ancla X
+                    $needs_render = 1;
                 }
             }
+
+            # --- 2. LÓGICA DE ARRASTRE VERTICAL (PRECIO) ---
+            # Solo aplicamos desplazamiento vertical si se arrastra el lienzo de precios
+            if ($delta_y != 0 && $canvas == $price_cv) {
+                
+                # ¡Rompemos el Auto-Scale al instante! Pasamos a Modo Manual.
+                $self->{auto_scale} = 0;
+
+                my $canvas_height = $canvas->Height() || 400;
+                my $rango = $self->{manual_y_max} - $self->{manual_y_min};
+                
+                # Transformamos los píxeles arrastrados al valor del precio
+                my $desplazamiento_precio = ($delta_y / $canvas_height) * $rango;
+
+                # Ajustamos los límites de la "cámara" virtual de Domenica
+                $self->{manual_y_max} += $desplazamiento_precio;
+                $self->{manual_y_min} += $desplazamiento_precio;
+
+                $self->{last_drag_y} = $e->y; # Reset de ancla Y
+                $needs_render = 1;
+            }
+
+            # Si nos movimos en X o en Y (o en ambas), pedimos repintar el fotograma
+            $self->request_render() if $needs_render;
         });
         
-        # C. Al soltar el clic, limpiamos la variable para liberar la memoria del arrastre
+        # C. Liberación del clic: Limpiamos la memoria
         $canvas->Tk::bind('<ButtonRelease-1>', sub {
             $self->{last_drag_x} = undef;
+            $self->{last_drag_y} = undef;
         });
     }
 }
