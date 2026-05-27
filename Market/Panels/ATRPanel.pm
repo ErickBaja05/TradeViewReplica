@@ -185,6 +185,9 @@ sub render {
     my $scale = $self->set_scale();
     my $canvas_height = $self->{canvas}->Height();
 
+    # Ordenarle a las escalas que dibujen su propia cuadrícula y eje Y
+    $scale->_draw_y_scale($self->{canvas});
+
     #2. Recuperar el arreglo de valores del ATR de forma ultra-segura
     my $atr_values = [];
     if (defined $self->{engine}->{indicator_manager}) {
