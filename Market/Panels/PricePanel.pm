@@ -273,6 +273,11 @@ sub _init_crosshair_objects {
 Actualiza las coordenadas de la cruz y de las etiquetas flotantes (precio y tiempo).
 =cut
 
+=head2 draw_crosshair
+
+Actualiza las coordenadas de la cruz y de las etiquetas flotantes (precio y tiempo).
+=cut
+
 sub draw_crosshair {
     my ($self, $x, $y, $is_active) = @_;
 
@@ -287,50 +292,41 @@ sub draw_crosshair {
         # A. Mover la línea vertical
         $self->{canvas}->coords($self->{crosshair_v_id}, $x, 0, $x, $canvas_height);
         
-       # B. Lógica del Tiempo (Erick's logic)
-        my ($start_index, $end_index) = $self->{engine}->compute_window();
-        my $indice_local = $scale->x_to_index($x);
-        
-        # Sumamos el inicio global al índice local de la pantalla
-        my $indice_global = $start_index + $indice_local;
+        # B. Lógica del Tiempo (CORRECCIÓN: Ricardo ya devuelve el índice absoluto)
+        my $indice_global = $scale->x_to_index($x);
         my $velas = $self->{engine}->{market_data}->get_data();
 
-        if ($indice_global >= 0 && $indice_global < scalar(@$velas)) {
+        # Verificamos que el índice exista dentro del arreglo de datos
+        if (defined $indice_global && $indice_global >= 0 && $indice_global < scalar(@$velas)) {
             my $ts = $velas->[$indice_global]->{time} || "";
             
-            # --- NUEVO FORMATO DE TIEMPO (TRADINGVIEW STYLE) ---
-            my $etiqueta_tiempo = $ts; # Fallback por si la fecha viene rara
-            
-            # Extraemos las partes de la fecha (Ej: 2026-05-26T12:00)
+            # Formato de tiempo (TradingView Style)
+            my $etiqueta_tiempo = $ts; 
             if (my ($anio, $mes, $dia, $hora) = $ts =~ /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2})/) {
-                # Mapeamos el número de mes a su abreviatura en inglés
                 my @nombres_meses = qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec);
-                my $nombre_mes = $nombres_meses[$mes - 1]; # Restamos 1 porque los arreglos empiezan en 0
-                
-                # Armamos la cadena final (Ej: "26 May 2026 12:00")
-                # Si quieres quitar el año, solo borra el "$anio " de la línea de abajo
+                my $nombre_mes = $nombres_meses[$mes - 1]; 
                 $etiqueta_tiempo = "$dia $nombre_mes $anio $hora";
             }
-            # ---------------------------------------------------
 
-            # Posicionamos el texto en el margen inferior (franja gris)
+            # Posicionamos el texto en el margen inferior (franja gris de Ricardo)
             my $y_franja = $canvas_height - 12;
             $self->{canvas}->coords($self->{crosshair_x_txt}, $x, $y_franja);
-            
-            # Inyectamos nuestra nueva etiqueta de tiempo formateada
             $self->{canvas}->itemconfigure($self->{crosshair_x_txt}, -text => $etiqueta_tiempo, -state => 'normal');
 
-            # Creamos el fondo negro envolviendo el texto (bbox = Bounding Box)
+            # Creamos el fondo dinámico envolviendo el texto
             my @bbox = $self->{canvas}->bbox($self->{crosshair_x_txt});
             if (@bbox) {
-                # [x1-padding, y1-padding, x2+padding, y2+padding]
                 $self->{canvas}->coords($self->{crosshair_x_bg}, $bbox[0]-6, $bbox[1]-2, $bbox[2]+6, $bbox[3]+2);
                 $self->{canvas}->itemconfigure($self->{crosshair_x_bg}, -state => 'normal');
                 
-                # 'raise' pone los elementos por encima de las velas para que no se tapen
+                # 'raise' pone los elementos por encima de las velas
                 $self->{canvas}->raise($self->{crosshair_x_bg});
                 $self->{canvas}->raise($self->{crosshair_x_txt});
             }
+        } else {
+            # Si el mouse sale de la zona con velas, escondemos la etiqueta de tiempo
+            $self->{canvas}->itemconfigure($self->{crosshair_x_bg}, -state => 'hidden');
+            $self->{canvas}->itemconfigure($self->{crosshair_x_txt}, -state => 'hidden');
         }
     }
 
@@ -342,7 +338,7 @@ sub draw_crosshair {
             
             # B. Lógica del Precio/Valor usando las escalas de Ricardo
             my $valor_y = $scale->y_to_value($y);
-            my $valor_fmt = sprintf("%.2f", $valor_y); # Forzamos 2 decimales
+            my $valor_fmt = sprintf("%.2f", $valor_y);
 
             # Posicionamos el texto a la derecha (Margen derecho de Ricardo = 65px)
             my $x_precio = $canvas_width - 32; 
