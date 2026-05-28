@@ -99,6 +99,11 @@ sub get_values
 sub reset
 {
     my ($self) = @_;
-    # TODO
+    $self->{values} = [];
+    $self->{tr_sum} = 0;
+    $self->{tr_count} = 0;
+    $self->{prev_close} = undef;
+    $self->{last_atr} = undef;
+    $self->{wilder_phase} = 0;
 }
 1;

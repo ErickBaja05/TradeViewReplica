@@ -30,7 +30,10 @@ sub register
 sub update_last
 {
     my ($self, $market_data) = @_;
-    # TODO
+    for my $name (keys %{$self->{indicators}})
+    {
+        $self->{indicators}{$name}->update_last($market_data);
+    }
 }
 
 # Obtiene valores de un indicador
@@ -67,6 +70,9 @@ sub slice_array
 sub reset_all
 {
     my ($self) = @_;
-    # TODO
+    for my $name (keys %{$self->{indicators}})
+    {
+        $self->{indicators}{$name}->reset();
+    }
 }
 1;
