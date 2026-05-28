@@ -121,10 +121,67 @@ sub y_to_value
     return $value;
 }
 
-# Dibuja escala vertical (precios/valores)
+# Dibuja escala vertical (precios/valores) y las líneas guía del fondo (Grid)
 sub _draw_y_scale
 {
     my ($self, $canvas) = @_;
-    # TODO
+
+    return unless $canvas;
+
+    # 1. Borrar el grid anterior para que no se encimen al hacer zoom o paneo
+    $canvas->delete('y_scale_grid');
+
+    my $range = $self->{y_max} - $self->{y_min};
+    return if $range <= 0;
+
+    # 2. Configurar la estética de TradingView
+    my $grid_color = '#1f2933'; # Gris muy sutil para que no compita con las velas
+    my $text_color = '#787b86'; # Gris claro para los números del eje
+    my $num_lines  = 6;         # Cantidad de líneas horizontales divisorias
+    my $step       = $range / $num_lines;
+
+    my $width      = $self->{width};
+    my $plot_width = $width - $self->{margin_right}; # Hasta donde llega la línea
+
+    # 3. Dibujar separador vertical derecho (Divide el gráfico de los números)
+    $canvas->createLine(
+        $plot_width, 0,
+        $plot_width, $self->{height},
+        -fill => $grid_color,
+        -tags => ['y_scale_grid']
+    );
+
+    # 4. Iterar para crear las líneas horizontales y sus textos
+    for my $i (1 .. $num_lines - 1) {
+        # Calcular el valor financiero y su altura en la pantalla
+        my $value = $self->{y_min} + ($i * $step);
+        my $y = $self->value_to_y($value);
+
+        # Formateo dinámico: Si el rango es pequeño (ATR), 4 decimales. Si es grande (Precio), 2.
+        my $fmt_value = ($range < 10) ? sprintf("%.4f", $value) : sprintf("%.2f", $value);
+
+        # A. Dibujar la línea punteada de fondo
+        $canvas->createLine(
+            0, $y,
+            $plot_width, $y,
+            -fill => $grid_color,
+            -dash => '.',
+            -tags => ['y_scale_grid']
+        );
+
+        # B. Dibujar el texto centrado en el margen derecho
+        my $x_text = $plot_width + ($self->{margin_right} / 2);
+        $canvas->createText(
+            $x_text, $y,
+            -text => $fmt_value,
+            -fill => $text_color,
+            -font => ['Helvetica', 9],
+            -tags => ['y_scale_grid']
+        );
+    }
+
+    # 5. Enviar el grid al fondo visual para que las velas pasen por encima de las líneas
+    $canvas->lower('y_scale_grid');
 }
+
 1;

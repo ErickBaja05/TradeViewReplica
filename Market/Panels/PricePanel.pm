@@ -155,6 +155,9 @@ sub render {
     my $scale = $self->set_scale();
     my $canvas_height = $self->{canvas}->Height();
 
+    # Ordenarle a las escalas que dibujen su propia cuadrícula y eje Y
+    $scale->_draw_y_scale($self->{canvas});
+
     # 2. Obtener el rango dinámico vertical de este conjunto para aplicar la fórmula temporal
     my ($precio_min, $precio_max) = $self->get_y_range();
     my $rango_y = $precio_max - $precio_min;
