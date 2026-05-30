@@ -77,14 +77,14 @@ sub update_last
             $self->{last_atr} = $first_atr;
             $self->{wilder_phase} = 1;
         }
-        else
+        
+    }else
         {
             # Calcular ATR despues del periodo (fase wilder)
             my $atr = ($self->{last_atr} * ($period - 1) + $tr) / $period;
             push @{$self->{values}}, $atr;
             $self->{last_atr} = $atr
         }
-    }
 }
 
 # Devuelve serie completa del ATR
