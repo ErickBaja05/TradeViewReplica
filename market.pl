@@ -8,6 +8,7 @@ use Tk;
 use Market::MarketData;
 use Market::IndicatorManager;
 use Market::ChartEngine;
+use Market::Indicators::ATR;
 
 # =========================================================================
 #   FASES DE EJECUCIÓN CENTRAL (MARKET.PL)
@@ -50,12 +51,13 @@ my $chart_engine = Market::ChartEngine->new(
 # Tarea A: Lectura del archivo CSV real e inyección de datos (Día 4)
 # =========================================================================
 
-# Abrimos el archivo de forma segura. (Asegúrate de tener el archivo datos.csv en la misma carpeta)
 my $archivo_csv = 'datos.csv';
 open(my $fh, '<', $archivo_csv) or die "No se pudo abrir el archivo '$archivo_csv' $!\n";
-
-# Descartamos la primera línea si el CSV tiene encabezados (Time, Open, High, Low, Close, Volume)
 my $encabezado = <$fh>;
+
+# 2. INSTANCIAMOS Y REGISTRAMOS EL ATR REAL AQUÍ, ANTES DEL CICLO
+my $atr_real = Market::Indicators::ATR->new(14);
+$indicator_manager->register('ATR', $atr_real);
 
 # Leemos línea por línea de forma eficiente (No satura la RAM de golpe)
 while (my $linea = <$fh>) {
@@ -73,6 +75,7 @@ while (my $linea = <$fh>) {
         close  => $close,
         volume => $volume
     });
+    $indicator_manager->update_last($market_data);
 }
 
 close($fh);

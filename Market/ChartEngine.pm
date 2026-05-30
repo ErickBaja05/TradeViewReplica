@@ -580,6 +580,9 @@ sub horizontal_zoom {
         # Si perdemos 10 barras de visión, y el ratón está en el 80% (0.8) de la pantalla,
         # desplazamos el offset en 8 barras para compensar.
         $self->{offset} += ($barras_perdidas * (1 - $porcentaje_pantalla));
+        # NUEVO: BLINDAJE CONTRA EL FUTURO VACÍO
+        # Evitamos que el zoom empuje la cámara hacia coordenadas sin datos
+        $self->{offset} = 0 if $self->{offset} < 0;
     } else {
         # MODO DEFAULT: Si no hay Ctrl, el offset no cambia.
         # Al no cambiar el offset, nuestra arquitectura por defecto ancla la vista 

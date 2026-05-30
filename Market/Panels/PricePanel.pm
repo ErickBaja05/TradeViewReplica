@@ -8,7 +8,7 @@ use Market::Panels::Scales;
 
 Market::Panels::PricePanel - Panel principal para el renderizado del gráfico de precios (velas).
 
-=head1 MÉTODOSS
+=head1 MÉTODOS
 
 =head2 new
 
@@ -49,64 +49,66 @@ sub new {
 
 =head2 get_y_range
 
-Calcula el precio mínimo (low) y máximo (high) de las velas visibles en la ventana actual.
-Añade un margen de holgura vertical para optimizar la visualización de datos en el Canvas.
+Calcula el precio mínimo (low) y máximo (high) de las velas visibles con blindaje contra datos corruptos.
+Controla el Modo Manual (Drag Y) y el Modo Automático.
 
 Retorna:
   - Lista con dos flotantes: ($min_y, $max_y)
-
 =cut
 
 sub get_y_range {
     my ($self) = @_;
 
-    # 1. Obtener los límites del índice de datos visibles calculado por Erick en el motor central
+    # 1. Modo Manual (ESENCIAL PARA EL DRAG EN EL EJE Y)
+    if (defined $self->{engine}->{auto_scale} && $self->{engine}->{auto_scale} == 0) {
+        return ($self->{engine}->{manual_y_min}, $self->{engine}->{manual_y_max});
+    }
+
+    # 2. Modo Automático
     my ($start, $end) = $self->{engine}->compute_window();
-    
-    # 2. Acceder de forma segura a las velas a través del módulo MarketData de Josué
     my $candles = $self->{engine}->{market_data}->get_data();
 
-    # Si no hay datos cargados aún en el sistema, devolvemos un rango por defecto estándar
     if (!defined $candles || scalar @$candles == 0) {
         return (0, 100);
     }
 
-    # Inicializar los extremos con el primer elemento del rango visible actual
-    my $min_y = $candles->[$start]->{low};
-    my $max_y = $candles->[$start]->{high};
+    my $min_y = undef;
+    my $max_y = undef;
 
-    # 3. Encontrar el valor máximo de los 'high' y el valor mínimo de los 'low' en la ventana actual
     for my $i ($start .. $end) {
         my $candle = $candles->[$i];
-        if (defined $candle) {
-            $min_y = $candle->{low}  if $candle->{low}  < $min_y;
-            $max_y = $candle->{high} if $candle->{high} > $max_y;
-        }
+        
+        # BLINDAJE: Ignorar velas vacías, nulas o saltos de línea del CSV
+        next unless defined $candle && defined $candle->{low} && $candle->{low} =~ /^[\d\.]+$/;
+        
+        $min_y = $candle->{low}  if !defined $min_y || $candle->{low}  < $min_y;
+        $max_y = $candle->{high} if !defined $max_y || $candle->{high} > $max_y;
     }
 
-    # Evitar una división por cero inesperada si el precio se mantiene completamente idéntico
+    # Fallback por si toda la ventana estaba vacía
+    return (0, 100) if !defined $min_y;
+
     if ($max_y == $min_y) {
         $max_y += 1.0;
         $min_y -= 1.0;
     }
 
-    # 4. RESOLUCIÓN DE CUELLO DE BOTELLA: Añadir holgura (padding) del 5%
-    # para que las velas no choquen agresivamente con los límites físicos del Canvas
+    # RESOLUCIÓN DE CUELLO DE BOTELLA: Añadir holgura (padding) del 5%
     my $padding = ($max_y - $min_y) * 0.05;
     $max_y += $padding;
     $min_y -= $padding;
+
+    # 3. Sincronización (Prepara los valores por si el usuario decide hacer Drag manual)
+    $self->{engine}->{manual_y_min} = $min_y;
+    $self->{engine}->{manual_y_max} = $max_y;
 
     return ($min_y, $max_y);
 }
 
 =head2 set_scale
 
-Instancia y actualiza el objeto Scales de Ricardo adaptándose al tamaño geométrico
+Instancia y actualiza el objeto Scales adaptándose al tamaño geométrico
 actual del widget Canvas de Tk. Permite una respuesta elástica al redimensionar.
-
-Retorna:
-  - Instancia del objeto Market::Panels::Scales actualizado.
-
 =cut
 
 sub set_scale {
@@ -119,8 +121,7 @@ sub set_scale {
     my ($start_index, $end_index) = $self->{engine}->compute_window();
 
     # EL SECRETO DEL ANCLAJE TRADINGVIEW:
-    # Calculamos el inicio teórico (incluso si es negativo) para que Ricardo 
-    # siempre ancle la última vela ($end_index) al margen derecho.
+    # Calculamos el inicio teórico (incluso si es negativo) para siempre anclar la última vela al margen derecho.
     my $visible_bars = $self->{engine}->{visible_bars} || 100;
     my $scale_offset = $end_index - $visible_bars + 1;
 
@@ -128,7 +129,7 @@ sub set_scale {
         width        => $width,
         height       => $height,
         visible_bars => $visible_bars,
-        offset       => $scale_offset, # Le pasamos el offset teórico, no el start_index
+        offset       => $scale_offset, 
         y_min        => $min_y,
         y_max        => $max_y,
     );
@@ -139,11 +140,7 @@ sub set_scale {
 =head2 render
 
 Dibuja las velas japonesas (mechas y cuerpos) en el canvas superior utilizando
-el data_slice recibido de la capa lógica. Aplica el parche matemático para el eje Y.
-
-Atributos de entrada:
-  - $data_slice : Referencia a un arreglo de hashes con los datos OHLCV visibles.
-
+el data_slice recibido de la capa lógica. 
 =cut
 
 sub render {
@@ -155,10 +152,10 @@ sub render {
     my $scale = $self->set_scale();
     my $canvas_height = $self->{canvas}->Height();
 
-    # Ordenarle a las escalas que dibujen su propia cuadrícula y eje Y
+    # INTEGRACIÓN V2: Ordenarle a las escalas que dibujen su propia cuadrícula y eje Y de precios
     $scale->_draw_y_scale($self->{canvas});
 
-    # 2. Obtener el rango dinámico vertical de este conjunto para aplicar la fórmula temporal
+    # 2. Obtener el rango dinámico vertical de este conjunto
     my ($precio_min, $precio_max) = $self->get_y_range();
     my $rango_y = $precio_max - $precio_min;
     $rango_y = 1.0 if $rango_y == 0; # Prevenir división por cero
@@ -166,15 +163,13 @@ sub render {
     # 3. Calcular un ancho dinámico proporcional para las velas financieras
     my $canvas_width = $self->{canvas}->Width();
     my $visible_bars = $self->{engine}->{visible_bars} || 100;
-    my $candle_width = ($canvas_width / $visible_bars) * 0.7; # 70% ocupado por la vela, 30% espacio
-    $candle_width = 1 if $candle_width < 1;
-
-    # Sincronizamos el ancho de dibujado con el espacio real que usa Ricardo (restando su margen derecho de 65px)
+    
+    # Sincronizamos el ancho de dibujado con el espacio real que se usa (restando el margen derecho de 65px)
     my $plot_width = $canvas_width - 65; 
     my $candle_width = ($plot_width / $visible_bars) * 0.8; # 80% ocupado por la vela, 20% espacio vacío
     $candle_width = 1 if $candle_width < 1;
 
-    # 4. Recuperar los índices de datos reales mapeados por Erick
+    # 4. Recuperar los índices de datos reales
     my ($start_index, $end_index) = $self->{engine}->compute_window();
 
     # 5. Iterar sobre las velas usando SOLO el índice incremental ($i)
@@ -182,10 +177,10 @@ sub render {
     for my $candle (@$data_slice) {
         last if $i > $end_index; 
 
-        # A. X con Ricardo (Precisión perfecta para el Zoom)
+        # A. X (Precisión perfecta para el Zoom)
         my $x_center = $scale->index_to_center_x($i);
 
-        # B. Y con Ricardo (Adiós parche matemático, usamos su función oficial)
+        # B. Y (Usando la función oficial de Escalas)
         my $y_open  = $scale->value_to_y($candle->{open});
         my $y_high  = $scale->value_to_y($candle->{high});
         my $y_low   = $scale->value_to_y($candle->{low});
@@ -218,33 +213,28 @@ sub render {
 
         $i++;
     }
-    # 1. Llamar al dibujo del eje temporal
+    
+    # 6. Llamar al dibujo del eje temporal
     $self->draw_time_axis();
 
-    # 2. Inicializar los objetos de la cruz
+    # 7. Inicializar los objetos de la cruz
     $self->_init_crosshair_objects();
 
-    # 3. Dibujar el último precio visible
+    # 8. Dibujar el último precio visible
     $self->render_last_visible_price($data_slice, $scale);
 }
 
 =head2 _init_crosshair_objects
-
-Inicializa los objetos gráficos del crosshair (líneas, cajas de fondo y textos) 
-dentro del canvas y almacena sus IDs para optimizar el rendimiento.
 =cut
 
 sub _init_crosshair_objects {
     my ($self) = @_;
 
-    # Aquí controlas los colores:
-    my $crosshair_color = '#555555'; # Color de la línea de la cruz
-    
-    # --- COLORES DE LAS CAJITAS ---
-    my $label_bg_color  = '#659c39'; # <-- CAMBIA ESTE para el fondo (TradingView usa azul/gris muy oscuro)
-    my $label_txt_color = '#1e15a8'; # <-- CAMBIA ESTE para el texto (Blanco)
+    my $crosshair_color = '#555555'; 
+    my $label_bg_color  = '#659c39'; 
+    my $label_txt_color = '#1e15a8'; 
 
-    # 1. Las líneas (Ya las tenía Dome)
+    # 1. Las líneas
     $self->{crosshair_v_id} = $self->{canvas}->createLine(
         0, 0, 0, 0, -fill => $crosshair_color, -dash => '.', -tags => ['crosshair_internal']
     );
@@ -272,13 +262,6 @@ sub _init_crosshair_objects {
 }
 
 =head2 draw_crosshair
-
-Actualiza las coordenadas de la cruz y de las etiquetas flotantes (precio y tiempo).
-=cut
-
-=head2 draw_crosshair
-
-Actualiza las coordenadas de la cruz y de las etiquetas flotantes (precio y tiempo).
 =cut
 
 sub draw_crosshair {
@@ -292,18 +275,14 @@ sub draw_crosshair {
 
     # --- 1. MOVER LÍNEA VERTICAL Y ETIQUETA DE TIEMPO (Eje X) ---
     if (defined $self->{crosshair_v_id}) {
-        # A. Mover la línea vertical
         $self->{canvas}->coords($self->{crosshair_v_id}, $x, 0, $x, $canvas_height);
         
-        # B. Lógica del Tiempo (CORRECCIÓN: Ricardo ya devuelve el índice absoluto)
         my $indice_global = $scale->x_to_index($x);
         my $velas = $self->{engine}->{market_data}->get_data();
 
-        # Verificamos que el índice exista dentro del arreglo de datos
         if (defined $indice_global && $indice_global >= 0 && $indice_global < scalar(@$velas)) {
             my $ts = $velas->[$indice_global]->{time} || "";
             
-            # Formato de tiempo (TradingView Style)
             my $etiqueta_tiempo = $ts; 
             if (my ($anio, $mes, $dia, $hora) = $ts =~ /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2})/) {
                 my @nombres_meses = qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec);
@@ -311,23 +290,19 @@ sub draw_crosshair {
                 $etiqueta_tiempo = "$dia $nombre_mes $anio $hora";
             }
 
-            # Posicionamos el texto en el margen inferior (franja gris de Ricardo)
             my $y_franja = $canvas_height - 12;
             $self->{canvas}->coords($self->{crosshair_x_txt}, $x, $y_franja);
             $self->{canvas}->itemconfigure($self->{crosshair_x_txt}, -text => $etiqueta_tiempo, -state => 'normal');
 
-            # Creamos el fondo dinámico envolviendo el texto
             my @bbox = $self->{canvas}->bbox($self->{crosshair_x_txt});
             if (@bbox) {
                 $self->{canvas}->coords($self->{crosshair_x_bg}, $bbox[0]-6, $bbox[1]-2, $bbox[2]+6, $bbox[3]+2);
                 $self->{canvas}->itemconfigure($self->{crosshair_x_bg}, -state => 'normal');
                 
-                # 'raise' pone los elementos por encima de las velas
                 $self->{canvas}->raise($self->{crosshair_x_bg});
                 $self->{canvas}->raise($self->{crosshair_x_txt});
             }
         } else {
-            # Si el mouse sale de la zona con velas, escondemos la etiqueta de tiempo
             $self->{canvas}->itemconfigure($self->{crosshair_x_bg}, -state => 'hidden');
             $self->{canvas}->itemconfigure($self->{crosshair_x_txt}, -state => 'hidden');
         }
@@ -336,14 +311,11 @@ sub draw_crosshair {
     # --- 2. MOVER LÍNEA HORIZONTAL Y ETIQUETA DE PRECIO (Eje Y) ---
     if (defined $self->{crosshair_h_id}) {
         if ($is_active) {
-            # A. Mover la línea horizontal
             $self->{canvas}->coords($self->{crosshair_h_id}, 0, $y, $canvas_width, $y);
             
-            # B. Lógica del Precio/Valor usando las escalas de Ricardo
             my $valor_y = $scale->y_to_value($y);
             my $valor_fmt = sprintf("%.2f", $valor_y);
 
-            # Posicionamos el texto a la derecha (Margen derecho de Ricardo = 65px)
             my $x_precio = $canvas_width - 32; 
             
             $self->{canvas}->coords($self->{crosshair_y_txt}, $x_precio, $y);
@@ -358,7 +330,6 @@ sub draw_crosshair {
                 $self->{canvas}->raise($self->{crosshair_y_txt});
             }
         } else {
-            # Si el ratón sale del panel, escondemos la línea y sus etiquetas
             $self->{canvas}->coords($self->{crosshair_h_id}, 0, 0, 0, 0);
             $self->{canvas}->itemconfigure($self->{crosshair_y_bg}, -state => 'hidden');
             $self->{canvas}->itemconfigure($self->{crosshair_y_txt}, -state => 'hidden');
@@ -368,8 +339,6 @@ sub draw_crosshair {
 }
 
 =head2 draw_time_axis
-
-Dibuja las etiquetas de tiempo (horas/minutos) en el margen inferior del lienzo.
 =cut
 
 sub draw_time_axis {
@@ -384,20 +353,17 @@ sub draw_time_axis {
     my $canvas_height = $self->{canvas}->Height();
     my $y_pos = $canvas_height - 12; 
     
-    # Recuperamos el inicio real de la pantalla
     my ($start_index, $end_index) = $self->{engine}->compute_window();
 
     for my $etiqueta (@$etiquetas) {
-        # Erick envía la posición relativa (0, 1, 2...)
         my $pos_relativa = $etiqueta->{indice_relativo} // 0;
         
-        # LA SOLUCIÓN: Calculamos el índice global absoluto para Ricardo
         my $absolute_index = $start_index + $pos_relativa;
         my $x = $scale->index_to_center_x($absolute_index);
         
         my $texto = $etiqueta->{timestamp};
         my ($hora) = $texto =~ /T(\d{2}:\d{2})/;
-        $hora //= $texto; # Fallback
+        $hora //= $texto; 
 
         my $color_texto = '#787b86';
         my $font_weight = 'normal';
@@ -405,7 +371,6 @@ sub draw_time_axis {
         if ($etiqueta->{es_cambio_dia}) {
             $color_texto = '#d1d4dc';
             $font_weight = 'bold';
-            # Si es cambio de día, mostramos la fecha en lugar de solo la hora
             ($hora) = $texto =~ /^(\d{4}-\d{2}-\d{2})/; 
         }
         
@@ -420,29 +385,23 @@ sub draw_time_axis {
 }
 
 =head2 render_last_visible_price
-
-Dibuja una línea horizontal punteada y una caja resaltada a la derecha
-con el precio de cierre de la última vela visible en pantalla.
 =cut
 
 sub render_last_visible_price {
     my ($self, $data_slice, $scale) = @_;
 
-    # Obtenemos la última vela del arreglo que acabamos de iterar
     my $last_candle = $data_slice->[-1];
     return unless defined $last_candle;
 
     my $last_close = $last_candle->{close};
     my $last_open  = $last_candle->{open};
 
-    # Calculamos la altura exacta usando la nueva función de Ricardo
     my $y = $scale->value_to_y($last_close);
     my $canvas_width = $self->{canvas}->Width();
 
-    # Determinamos el color: Verde si cerró arriba o igual, Rojo si bajó
     my $color = ($last_close >= $last_open) ? '#26a69a' : '#ef5350';
 
-    # 1. Línea horizontal punteada cruzando todo el gráfico
+    # 1. Línea horizontal punteada
     $self->{canvas}->createLine(
         0, $y,
         $canvas_width, $y,
@@ -451,11 +410,10 @@ sub render_last_visible_price {
         -tags => ['last_price_indicator']
     );
 
-    # 2. Etiqueta de precio a la derecha ($canvas_width - 32)
+    # 2. Etiqueta de precio a la derecha
     my $x_pos = $canvas_width - 32;
     my $valor_fmt = sprintf("%.2f", $last_close);
 
-    # Creamos primero el texto para conocer su tamaño
     my $txt_id = $self->{canvas}->createText(
         $x_pos, $y,
         -text => $valor_fmt,
@@ -464,7 +422,6 @@ sub render_last_visible_price {
         -tags => ['last_price_indicator']
     );
 
-    # Creamos la caja de fondo dinámicamente según el tamaño del texto
     my @bbox = $self->{canvas}->bbox($txt_id);
     if (@bbox) {
         my $bg_id = $self->{canvas}->createRectangle(
@@ -473,7 +430,6 @@ sub render_last_visible_price {
             -outline => $color,
             -tags    => ['last_price_indicator']
         );
-        # Bajamos el fondo para que no tape los números
         $self->{canvas}->lower($bg_id, $txt_id);
     }
 }
