@@ -57,10 +57,9 @@ $scale_btn = $control_panel->Button(
     -cursor           => 'hand2',
     -command          => sub {
         return unless $chart_engine;
-        # Invertimos el estado binario del auto_scale del motor
-        $chart_engine->{auto_scale} = $chart_engine->{auto_scale} ? 0 : 1;
-        $scale_btn->configure(-text => $chart_engine->{auto_scale} ? "Escala: Auto" : "Escala: Manual",
-                              -fg   => $chart_engine->{auto_scale} ? '#3bb3e4' : '#ff9800');
+        # Solo le decimos al motor que invierta la escala, él se encarga del resto
+        my $nuevo_modo = $chart_engine->{auto_scale} ? 0 : 1;
+        $chart_engine->set_auto_scale($nuevo_modo);
         $chart_engine->request_render();
     }
 )->pack(-side => 'left', -padx => 5);
@@ -138,7 +137,7 @@ $chart_engine = Market::ChartEngine->new(
     time_canvas       => $time_canvas,       # Inyección del eje horizontal de tiempo
     atr_canvas        => $atr_canvas,
     atr_axis_canvas   => $atr_axis_canvas,   # Inyección del eje vertical de volatilidad
-    widgets           => { main_window => $mw }
+    widgets           => { main_window => $mw, scale_btn => $scale_btn }
 );
 
 
