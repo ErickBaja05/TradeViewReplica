@@ -1,4 +1,3 @@
-
 use strict;
 use warnings;
 use FindBin;
@@ -19,54 +18,142 @@ my $mw = MainWindow->new();
 $mw->title("Replica Financiera TradingView - EPN");
 $mw->geometry("1720x900");
 
-# Creación de layouts verticales independientes para los dos paneles
-# Creación de layouts verticales
-# El Precio se expande (ocupa todo lo posible), el ATR NO se expande (ocupa solo lo necesario)
-my $price_frame = $mw->Frame(-bg => '#131722')->pack(-fill => 'both', -expand => 1);
-my $atr_frame   = $mw->Frame(-bg => '#131722')->pack(-fill => 'both', -expand => 0);
+# --- BARRA SUPERIOR DE CONTROL DE INTERFAZ ---
+my $control_panel = $mw->Frame(-bg => '#1c2030', -relief => 'raised', -bd => 1)
+                       ->pack(-side => 'top', -fill => 'x', -ipady => 4);
 
-# Inicialización de los lienzos (Canvases)
-my $price_canvas = $price_frame->Canvas()->pack(-fill => 'both', -expand => 1);
-my $atr_canvas   = $atr_frame->Canvas()->pack(-fill => 'both', -expand => 1);
+# Control de Temporalidades (Requerimiento Avanzado del documento: 1m, 5m, 15m)
+my $tf_label = $control_panel->Label(-text => "Temporalidad:", -bg => '#1c2030', -fg => '#b1b5be', -font => 'Arial 10 bold')
+                             ->pack(-side => 'left', -padx => 10);
+
+# Declaración adelantada de la referencia del motor para usar en los callbacks de los botones
+my $chart_engine;
+
+for my $tf ('1m', '5m', '15m') {
+    $control_panel->Button(
+        -text             => $tf,
+        -bg               => '#2a2e39',
+        -fg               => 'white',
+        -activebackground => '#2962ff',
+        -activeforeground => 'white',
+        -relief           => 'flat',
+        -cursor           => 'hand2',
+        -command          => sub { $chart_engine->set_timeframe($tf) if $chart_engine; }
+    )->pack(-side => 'left', -padx => 3);
+}
+
+# Espaciador estético intermedio
+$control_panel->Label(-text => " | ", -bg => '#1c2030', -fg => '#363c4e')->pack(-side => 'left', -padx => 10);
+
+# Botón dinámico para conmutar el Modo de Escala (Auto / Manual)
+my $scale_btn;
+$scale_btn = $control_panel->Button(
+    -text             => "Escala: Auto",
+    -bg               => '#2a2e39',
+    -fg               => '#3bb3e4',
+    -activebackground => '#2a2e39',
+    -activeforeground => '#3bb3e4',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -command          => sub {
+        return unless $chart_engine;
+        # Invertimos el estado binario del auto_scale del motor
+        $chart_engine->{auto_scale} = $chart_engine->{auto_scale} ? 0 : 1;
+        $scale_btn->configure(-text => $chart_engine->{auto_scale} ? "Escala: Auto" : "Escala: Manual",
+                              -fg   => $chart_engine->{auto_scale} ? '#3bb3e4' : '#ff9800');
+        $chart_engine->request_render();
+    }
+)->pack(-side => 'left', -padx => 5);
+
+# Botón para restablecer los parámetros visuales (Reset View)
+$control_panel->Button(
+    -text             => "Restablecer Vista (R)",
+    -bg               => '#2a2e39',
+    -fg               => 'white',
+    -activebackground => '#ff4a4a',
+    -activeforeground => 'white',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -command          => sub {
+        return unless $chart_engine;
+        $chart_engine->reset_view();
+        # Sincronizamos el texto del botón de escala al volver a modo automático
+        $scale_btn->configure(-text => "Escala: Auto", -fg => '#3bb3e4');
+    }
+)->pack(-side => 'left', -padx => 10);
+
+
+# --- ESTRUCTURA MODULAR DE CONTENEDORES PARA EVITAR DEFORMACIÓN ---
+
+# A. PANEL PRINCIPAL DE PRECIOS Y VELAS
+my $price_frame = $mw->Frame(-bg => '#131722')->pack(-side => 'top', -fill => 'both', -expand => 1);
+
+my $price_main_row = $price_frame->Frame(-bg => '#131722')->pack(-side => 'top', -fill => 'both', -expand => 1);
+
+# ¡EL TRUCO TK! Empaquetamos PRIMERO el eje vertical (fijo a la derecha)
+my $price_axis_canvas = $price_main_row->Canvas(-bg => '#131722', -width => 75, -highlightthickness => 0)
+                                       ->pack(-side => 'right', -fill => 'y');
+
+# LUEGO empaquetamos las velas para que se expandan en el espacio sobrante
+my $price_canvas = $price_main_row->Canvas(-bg => '#131722', -highlightthickness => 0)
+                                  ->pack(-side => 'left', -fill => 'both', -expand => 1);
+
+
+# Fila inferior de Tiempos
+my $time_axis_row = $price_frame->Frame(-bg => '#131722')->pack(-side => 'top', -fill => 'x');
+
+# Empaquetamos PRIMERO la esquina muerta a la derecha
+my $price_corner = $time_axis_row->Canvas(-bg => '#131722', -width => 75, -height => 25, -highlightthickness => 0)
+                                 ->pack(-side => 'right');
+
+# LUEGO el eje del tiempo a la izquierda
+my $time_canvas = $time_axis_row->Canvas(-bg => '#131722', -height => 25, -highlightthickness => 0)
+                                ->pack(-side => 'left', -fill => 'x', -expand => 1);
+
+
+# B. PANEL INFERIOR DEL INDICADOR ATR
+my $atr_frame = $mw->Frame(-bg => '#131722', -height => 160)->pack(-side => 'top', -fill => 'both', -expand => 0);
+
+my $atr_main_row = $atr_frame->Frame(-bg => '#131722')->pack(-side => 'top', -fill => 'both', -expand => 1);
+
+# Empaquetamos PRIMERO el eje del ATR a la derecha
+my $atr_axis_canvas = $atr_main_row->Canvas(-bg => '#131722', -width => 75, -highlightthickness => 0)
+                                    ->pack(-side => 'right', -fill => 'y');
+
+# LUEGO el lienzo de la curva ATR a la izquierda
+my $atr_canvas = $atr_main_row->Canvas(-bg => '#131722', -highlightthickness => 0)
+                               ->pack(-side => 'left', -fill => 'both', -expand => 1);
 
 
 # 2. Instanciación e interconexión de las capas arquitectónicas
-my $market_data       = Market::MarketData->new();       # Capa 1: Datos
-my $indicator_manager = Market::IndicatorManager->new(); # Capa 2: Indicadores
+my $market_data       = Market::MarketData->new();       
+my $indicator_manager = Market::IndicatorManager->new(); 
 
-# Capa 4: Aplicación (Orquestador Central)
-my $chart_engine = Market::ChartEngine->new(
+# Capa 4: Aplicación (Orquestador Central - Inyectamos las nuevas referencias de ejes)
+$chart_engine = Market::ChartEngine->new(
     market_data       => $market_data,
     indicator_manager => $indicator_manager,
     price_canvas      => $price_canvas,
+    price_axis_canvas => $price_axis_canvas, # Inyección del eje vertical de precios
+    time_canvas       => $time_canvas,       # Inyección del eje horizontal de tiempo
     atr_canvas        => $atr_canvas,
+    atr_axis_canvas   => $atr_axis_canvas,   # Inyección del eje vertical de volatilidad
     widgets           => { main_window => $mw }
 );
 
 
 # 3. Tareas secuenciales requeridas por el documento de requerimientos
-# Tarea A: Invoca la lectura de los datos (Día 1: Datos Mock/Simulados básicos)
-
-# =========================================================================
-# Tarea A: Lectura del archivo CSV real e inyección de datos (Día 4)
-# =========================================================================
-
 my $archivo_csv = 'datos.csv';
 open(my $fh, '<', $archivo_csv) or die "No se pudo abrir el archivo '$archivo_csv' $!\n";
 my $encabezado = <$fh>;
 
-# 2. INSTANCIAMOS Y REGISTRAMOS EL ATR REAL AQUÍ, ANTES DEL CICLO
 my $atr_real = Market::Indicators::ATR->new(14);
 $indicator_manager->register('ATR', $atr_real);
 
-# Leemos línea por línea de forma eficiente (No satura la RAM de golpe)
 while (my $linea = <$fh>) {
     chomp $linea;
-    
-    # Separamos los valores por comas
     my ($time, $open, $high, $low, $close, $volume) = split(',', $linea);
     
-    # Inyectamos la vela directamente al contenedor de Josué
     $market_data->add_candle({
         time   => $time,
         open   => $open,
@@ -77,41 +164,17 @@ while (my $linea = <$fh>) {
     });
     $indicator_manager->update_last($market_data);
 }
-
 close($fh);
 print "Datos del CSV cargados exitosamente. Total de velas: " . $market_data->size() . "\n";
 
-#Tarea B: Invoca la actualización del mercado entre distintas temporalidades
 $market_data->build_timeframes();
-
-#Tarea C: Invoca la actualización de los indicadores desacoplados
 $indicator_manager->update_last($market_data);
-
-# --- PARCHE TEMPORAL PARA PROBAR EL PANEL ATR DE DOMENICA (DÍA 4) ---
-# Creamos un objeto falso (Mock) que simula ser el indicador ATR de Ricardo
-{
-    package MockATR;
-    sub new { bless { values => [] }, shift }
-    sub get_values { return shift->{values} }
-}
-my $atr_falso = MockATR->new();
-
-# Llenamos el indicador falso con números aleatorios para las 30,000 velas
-for (my $i = 0; $i < $market_data->size(); $i++) {
-    push @{$atr_falso->{values}}, 10 + rand(5); # Valores aleatorios entre 10 y 15
-}
-
-# ¡Registramos el indicador falso en el estante de Ricardo!
-$indicator_manager->register('ATR', $atr_falso);
 # ---------------------------------------------------------------------
 
-#Tarea D: Dibuja el primer chart visual en pantalla
-
-# Activación de los escuchadores de eventos para el Día 3
+# Inicialización y renderizado del entorno visual
 $chart_engine->bind_all_canvas();
 $chart_engine->bind_events();
 $chart_engine->render();
-
 
 # 4. Lanzamiento del ciclo principal de escucha de eventos de la interfaz
 MainLoop;

@@ -2,186 +2,115 @@ package Market::Panels::Scales;
 use strict;
 use warnings;
 
-# Cada panel tiene su propio eje vertical Y
-# Por otro lado, el horizontal X es común entre todos los paneles, el cual sirve para el zoom, el scroll y crosshair cuyas coordinadas horizontales son las mismas entre todos los paneles
-# La clase también gestiona la transformación entre índices de datos y coordenadas en pantalla de los ejes vertical y horizontal
-# Importante: NUNCA mezclar coordenadas de datos con coordenadas de pantalla.
-
-# Inicializa sistema de escalas
 sub new
 {
     my ($class, %args) = @_;
     my $self =
     {
-        # Informacion del grafico
         width         => $args{width}         || 800,
         height        => $args{height}        || 400,
         visible_bars  => $args{visible_bars}  || 100,
         offset        => $args{offset}        || 0,
-        # Coordenadas
         y_min         => $args{y_min}         || 0,
         y_max         => $args{y_max}         || 1,
-        # Margenes
-        margin_left   => $args{margin_left}   || 0,
-        margin_right  => $args{margin_right}  || 65,
-        margin_top    => $args{margin_top}    || 10,
-        margin_bottom => $args{margin_bottom} || 25,
+        
+        # CORRECCIÓN VITAL: Usar 'defined' en lugar de '||' para permitir márgenes de valor 0
+        margin_left   => defined $args{margin_left}   ? $args{margin_left}   : 0,
+        margin_right  => defined $args{margin_right}  ? $args{margin_right}  : 65,
+        margin_top    => defined $args{margin_top}    ? $args{margin_top}    : 10,
+        margin_bottom => defined $args{margin_bottom} ? $args{margin_bottom} : 25,
     };
     bless $self, $class;
     return $self;
 }
 
-# Convierte índice → coordenada X
-sub index_to_x
-{
+sub index_to_x {
     my ($self, $index) = @_;
-
     my $offset = $index - $self->{offset};
     my $plot_width = $self->{width} - $self->{margin_left} - $self->{margin_right};
     my $candle_width = $plot_width / $self->{visible_bars};
-   
-    my $x = $self->{margin_left} + $offset * $candle_width;
-
-    return $x;
+    return $self->{margin_left} + $offset * $candle_width;
 }
 
-# Convierte X → índice entero
-sub x_to_index
-{
+sub x_to_index {
     my ($self, $x) = @_;
-    
     my $plot_width = $self->{width} - $self->{margin_left} - $self->{margin_right};
     my $candle_width = $plot_width / $self->{visible_bars};
     my $offset = ($x - $self->{margin_left}) / $candle_width;
-
-    my $index = int($offset + 0.5) + $self->{offset};
-
-    return $index;
+    return int($offset + 0.5) + $self->{offset};
 }
 
-# Convierte X → índice continuo
-# Más precisión para interacción
-sub x_to_index_float
-{
+sub x_to_index_float {
     my ($self, $x) = @_;
-
     my $plot_width = $self->{width} - $self->{margin_left} - $self->{margin_right};
     my $candle_width = $plot_width / $self->{visible_bars};
     my $offset = ($x - $self->{margin_left}) / $candle_width;
-
-    my $index = $offset + $self->{offset};
-    
-    return $index;
+    return $offset + $self->{offset};
 }
 
-# Devuelve centro de una vela en X
-sub index_to_center_x
-{
+sub index_to_center_x {
     my ($self, $index) = @_;
-
     my $offset = $index - $self->{offset};
     my $plot_width = $self->{width} - $self->{margin_left} - $self->{margin_right};
     my $candle_width = $plot_width / $self->{visible_bars};
-   
-    my $x = $self->{margin_left} + $offset * $candle_width + $candle_width / 2;
-
-    return $x;
+    return $self->{margin_left} + $offset * $candle_width + $candle_width / 2;
 }
 
-# Convierte valor (precio/indicador) → Y
-sub value_to_y
-{
+sub value_to_y {
     my ($self, $value) = @_;
-
     my $plot_height = $self->{height} - $self->{margin_top} - $self->{margin_bottom};
     my $range = $self->{y_max} - $self->{y_min};
     return 0 if $range == 0;
     
     my $normalized = ($value - $self->{y_min}) / $range;
-
-    # Inversion del eje y para tk
-    my $y = $self->{height} - $self->{margin_bottom} - ($normalized * $plot_height);
-
-    return $y;
+    return $self->{height} - $self->{margin_bottom} - ($normalized * $plot_height);
 }
 
-# Convierte Y → valor
-sub y_to_value
-{
+sub y_to_value {
     my ($self, $y) = @_;
-    
     my $plot_height = $self->{height} - $self->{margin_top} - $self->{margin_bottom};
     my $range = $self->{y_max} - $self->{y_min};
     return 0 if $range == 0;
 
     my $normalized = ($self->{height} - $self->{margin_bottom} - $y) / $plot_height;
-
-    my $value = ($normalized * $range) + $self->{y_min};
-
-    return $value;
+    return ($normalized * $range) + $self->{y_min};
 }
 
-# Dibuja escala vertical (precios/valores) y las líneas guía del fondo (Grid)
-sub _draw_y_scale
-{
-    my ($self, $canvas) = @_;
-
+# Modificado para recibir el canvas independiente del eje Y
+sub _draw_y_scale {
+    my ($self, $canvas, $axis_canvas) = @_;
     return unless $canvas;
-
-    # 1. Borrar el grid anterior para que no se encimen al hacer zoom o paneo
-    $canvas->delete('y_scale_grid');
 
     my $range = $self->{y_max} - $self->{y_min};
     return if $range <= 0;
 
-    # 2. Configurar la estética de TradingView
-    my $grid_color = '#1f2933'; # Gris muy sutil para que no compita con las velas
-    my $text_color = '#787b86'; # Gris claro para los números del eje
-    my $num_lines  = 6;         # Cantidad de líneas horizontales divisorias
+    my $grid_color = '#1f2933'; 
+    my $text_color = '#787b86'; 
+    my $num_lines  = 6;         
     my $step       = $range / $num_lines;
 
-    my $width      = $self->{width};
-    my $plot_width = $width - $self->{margin_right}; # Hasta donde llega la línea
+    my $plot_width = $self->{width}; 
 
-    # 3. Dibujar separador vertical derecho (Divide el gráfico de los números)
-    $canvas->createLine(
-        $plot_width, 0,
-        $plot_width, $self->{height},
-        -fill => $grid_color,
-        -tags => ['y_scale_grid']
-    );
+    # Borde separador derecho en el canvas principal
+    $canvas->createLine($plot_width - 1, 0, $plot_width - 1, $self->{height}, -fill => $grid_color);
 
-    # 4. Iterar para crear las líneas horizontales y sus textos
     for my $i (1 .. $num_lines - 1) {
-        # Calcular el valor financiero y su altura en la pantalla
         my $value = $self->{y_min} + ($i * $step);
         my $y = $self->value_to_y($value);
-
-        # Formateo dinámico: Si el rango es pequeño (ATR), 4 decimales. Si es grande (Precio), 2.
         my $fmt_value = ($range < 10) ? sprintf("%.4f", $value) : sprintf("%.2f", $value);
 
-        # A. Dibujar la línea punteada de fondo
-        $canvas->createLine(
-            0, $y,
-            $plot_width, $y,
-            -fill => $grid_color,
-            -dash => '.',
-            -tags => ['y_scale_grid']
-        );
+        # Cuadrícula horizontal en el lienzo de las velas
+        $canvas->createLine(0, $y, $plot_width, $y, -fill => $grid_color, -dash => '.');
 
-        # B. Dibujar el texto centrado en el margen derecho
-        my $x_text = $plot_width + ($self->{margin_right} / 2);
-        $canvas->createText(
-            $x_text, $y,
-            -text => $fmt_value,
-            -fill => $text_color,
-            -font => ['Helvetica', 9],
-            -tags => ['y_scale_grid']
-        );
+        # Los números se envían exclusivamente al lienzo lateral (si existe)
+        if ($axis_canvas) {
+            $axis_canvas->createText(
+                37, $y, # 37 = Centro del canvas lateral de 75px
+                -text => $fmt_value,
+                -fill => $text_color,
+                -font => ['Helvetica', 9]
+            );
+        }
     }
-
-    # 5. Enviar el grid al fondo visual para que las velas pasen por encima de las líneas
-    $canvas->lower('y_scale_grid');
 }
-
 1;
