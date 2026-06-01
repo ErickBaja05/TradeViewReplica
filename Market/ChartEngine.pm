@@ -214,13 +214,17 @@ sub bind_all_canvas {
 
             # B. Panning Vertical (Mover la cámara del precio)
             if ($delta_y != 0 && $canvas == $price_cv) {
-                $self->set_auto_scale(0); # Al arrastrar, rompemos el Auto-Scale
-                my $canvas_height = $canvas->Height() || 400;
-                my $rango = $self->{manual_y_max} - $self->{manual_y_min};
-                my $desplazamiento = ($delta_y / $canvas_height) * $rango;
 
-                $self->{manual_y_max} += $desplazamiento;
-                $self->{manual_y_min} += $desplazamiento;
+                if ($self->{auto_scale} == 0)
+                {
+                    my $canvas_height = $canvas->Height() || 400;
+                    my $rango = $self->{manual_y_max} - $self->{manual_y_min};
+                    my $desplazamiento = ($delta_y / $canvas_height) * $rango;
+
+                    $self->{manual_y_max} += $desplazamiento;
+                    $self->{manual_y_min} += $desplazamiento;
+                }
+
                 $self->{last_drag_y} = $e->y;
                 $needs_render = 1;
             }
@@ -281,7 +285,6 @@ sub bind_all_canvas {
             
             # Pasar a modo manual capturando la escala actual del precio
             if ($axis_cv == $price_axis_cv && $self->{auto_scale}) {
-                self->set_auto_scale(0);
                 if ($self->{price_panel}) {
                     my ($min, $max) = $self->{price_panel}->get_y_range();
                     $self->{manual_y_min} = $min;
@@ -478,7 +481,7 @@ sub horizontal_zoom {
     $bars_change = 1 if $bars_change < 1;
     
     my $new_bars = $current_bars + ($delta > 0 ? -$bars_change : $bars_change);
-    $new_bars = 2 if $new_bars < 2;
+    $new_bars = 5 if $new_bars < 5;
 
     if ($has_ctrl && defined $mouse_x && defined $self->{price_panel}) {
         my $canvas_width = $self->{price_canvas}->Width() || 1;
