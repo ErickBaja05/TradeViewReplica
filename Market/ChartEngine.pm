@@ -527,8 +527,20 @@ sub get_all_timestamps {
 sub set_auto_scale {
     my ($self, $mode) = @_;
     
-    $self->{auto_scale} = $mode;
+    # ¡TRUCO VITAL! Si el usuario presiona el botón para ir a Manual (0), 
+    # debemos capturar el rango visual del ATR MIENTRAS AÚN ESTÁ EN AUTO, 
+    # para que herede los valores reales en lugar de saltar a 0 - 10.
+    if ($mode == 0 && $self->{atr_panel}) {
+        my ($min, $max) = $self->{atr_panel}->get_y_range();
+        $self->{atr_manual_y_min} = $min;
+        $self->{atr_manual_y_max} = $max;
+    }
 
+    # Sincronizamos ambas banderas maestras al mismo estado
+    $self->{auto_scale} = $mode;
+    $self->{atr_auto_scale} = $mode;
+
+    # Actualizamos la estética del botón de la interfaz
     if (my $btn = $self->{widgets}->{scale_btn}) {
         $btn->configure(
             -text => $mode ? "Escala: Auto" : "Escala: Manual",

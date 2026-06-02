@@ -29,7 +29,7 @@ sub get_y_range {
     if (defined $self->{engine}->{atr_auto_scale} && $self->{engine}->{atr_auto_scale} == 0) {
         return ($self->{engine}->{atr_manual_y_min}, $self->{engine}->{atr_manual_y_max});
     }
-    
+
     my ($start, $end) = $self->{engine}->compute_window();
     my $atr_values = [];
     if (defined $self->{engine}->{indicator_manager}) {
@@ -72,25 +72,27 @@ sub set_scale {
     my ($min_y, $max_y) = $self->get_y_range();
     my $width  = $self->{canvas}->Width();
     my $height = $self->{canvas}->Height();
+    
     my ($start_index, $end_index) = $self->{engine}->compute_window();
     my $visible_bars = $self->{engine}->{visible_bars} || 100;
     my $scale_offset = $end_index - $visible_bars + 1;
 
     $self->{scale} = Market::Panels::Scales->new(
         width        => $width,
-        height       => $height / 2,
+        height       => $height,
         visible_bars => $visible_bars,
         offset       => $scale_offset, 
         y_min        => $min_y,
         y_max        => $max_y,
-        margin_right  => 0,  
-        margin_bottom => 15, # <-- CAMBIAR DE 0 a 15 (Respiro inferior para el texto)
-        margin_left   => 0,
-        margin_top    => 15  # <-- CAMBIAR DE 10 a 15 (Respiro superior para el texto) 
+        
+        # ¡LA MAGIA DE LOS BORDES! Apagamos todos los márgenes para que 
+        # la cuadrícula choque exactamente contra los límites de la pantalla.
+        margin_top   => 0,
+        margin_bottom=> 0,
+        margin_right => 0, 
     );
     return $self->{scale};
 }
-
 sub render {
     my ($self, $data_slice) = @_;
     return unless $data_slice && scalar(@$data_slice) > 0;
