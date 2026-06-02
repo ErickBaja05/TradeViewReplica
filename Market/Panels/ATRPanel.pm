@@ -131,24 +131,65 @@ sub render {
 sub init_crosshair {
     my ($self) = @_;
     my $crosshair_color = '#a3a6af';
+    my $label_bg_color  = '#fff2cc'; # Amarillo pastel
+    my $label_txt_color = '#131722'; # Texto oscuro
 
+    # Líneas guía en el canvas principal del ATR
     $self->{crosshair_v_id} = $self->{canvas}->createLine(0, 0, 0, 0, -fill => $crosshair_color, -dash => '.');
     $self->{crosshair_h_id} = $self->{canvas}->createLine(0, 0, 0, 0, -fill => $crosshair_color, -dash => '.');
+
+    # Etiqueta Y (Volatilidad) renderizada en el canvas del eje derecho del ATR
+    my $axis_cv = $self->{engine}->{atr_axis_canvas};
+    if ($axis_cv) {
+        $self->{crosshair_y_bg} = $axis_cv->createRectangle(0, 0, 0, 0, -fill => $label_bg_color, -outline => $label_bg_color, -state => 'hidden');
+        $self->{crosshair_y_txt} = $axis_cv->createText(0, 0, -fill => $label_txt_color, -font => ['Helvetica', 10, 'bold'], -state => 'hidden');
+    }
 }
 
 sub draw_crosshair {
     my ($self, $x, $y, $is_active) = @_;
+    
     my $canvas_height = $self->{canvas}->Height();
     my $canvas_width  = $self->{canvas}->Width();
+    my $scale         = $self->{scale};
+    my $axis_cv       = $self->{engine}->{atr_axis_canvas};
 
-    return if $canvas_width <= 1 || $canvas_height <= 1;
+    return if $canvas_width <= 1 || $canvas_height <= 1 || !defined $scale;
 
+    # --- Mover línea vertical ---
     if (defined $self->{crosshair_v_id}) {
         $self->{canvas}->coords($self->{crosshair_v_id}, $x, 0, $x, $canvas_height);
     }
-    if (defined $self->{crosshair_h_id}) {
-        if ($is_active) { $self->{canvas}->coords($self->{crosshair_h_id}, 0, $y, $canvas_width, $y); } 
-        else { $self->{canvas}->coords($self->{crosshair_h_id}, 0, 0, 0, 0); }
+    
+    # --- Mover línea horizontal y etiqueta Y del ATR ---
+    if (defined $self->{crosshair_h_id} && $axis_cv) {
+        if ($is_active) { 
+            # 1. Mover la línea punteada
+            $self->{canvas}->coords($self->{crosshair_h_id}, 0, $y, $canvas_width, $y); 
+            
+            # 2. Calcular valor (4 decimales para volatilidad)
+            my $valor_y = $scale->y_to_value($y);
+            my $valor_fmt = sprintf("%.4f", $valor_y);
+
+            # 3. Posicionar texto centrado en el eje lateral (X = 37)
+            $axis_cv->coords($self->{crosshair_y_txt}, 37, $y);
+            $axis_cv->itemconfigure($self->{crosshair_y_txt}, -text => $valor_fmt, -state => 'normal');
+
+            # 4. Envolver el texto con el fondo amarillo pastel
+            my @bbox_y = $axis_cv->bbox($self->{crosshair_y_txt});
+            if (@bbox_y) {
+                $axis_cv->coords($self->{crosshair_y_bg}, $bbox_y[0]-6, $bbox_y[1]-2, $bbox_y[2]+6, $bbox_y[3]+2);
+                $axis_cv->itemconfigure($self->{crosshair_y_bg}, -state => 'normal');
+                $axis_cv->raise($self->{crosshair_y_bg});
+                $axis_cv->raise($self->{crosshair_y_txt});
+            }
+            
+        } else { 
+            # Si el mouse sale del panel, ocultamos todo
+            $self->{canvas}->coords($self->{crosshair_h_id}, 0, 0, 0, 0); 
+            $axis_cv->itemconfigure($self->{crosshair_y_bg}, -state => 'hidden');
+            $axis_cv->itemconfigure($self->{crosshair_y_txt}, -state => 'hidden');
+        }
     }
 }
 
