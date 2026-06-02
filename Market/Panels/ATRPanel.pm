@@ -24,6 +24,12 @@ sub round {
 
 sub get_y_range {
     my ($self) = @_;
+
+    # NUEVO: ¡Escuchar al motor si estamos en modo manual de Volatilidad!
+    if (defined $self->{engine}->{atr_auto_scale} && $self->{engine}->{atr_auto_scale} == 0) {
+        return ($self->{engine}->{atr_manual_y_min}, $self->{engine}->{atr_manual_y_max});
+    }
+    
     my ($start, $end) = $self->{engine}->compute_window();
     my $atr_values = [];
     if (defined $self->{engine}->{indicator_manager}) {

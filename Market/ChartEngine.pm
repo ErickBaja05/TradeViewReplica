@@ -37,7 +37,7 @@ sub new {
         manual_y_max      => 100,    
         manual_y_min      => 0,      
 
-        # NUEVO: Estado de Escalas ATR (Volatilidad)
+        # Estado de Escalas ATR (Volatilidad)
         atr_auto_scale    => 1,
         atr_manual_y_max  => 10,
         atr_manual_y_min  => 0,
@@ -150,7 +150,7 @@ sub bind_all_canvas {
     }
 
     # ==========================================================
-    # NUEVO: LÓGICA DE RUEDA DEL RATÓN (ZOOM) AISLADA POR CANVAS
+    # LÓGICA DE RUEDA DEL RATÓN (ZOOM) AISLADA POR CANVAS
     # ==========================================================
     
     # 1. Zoom Horizontal (Solo si el mouse está sobre las velas o el ATR)
@@ -301,24 +301,13 @@ sub bind_all_canvas {
     for my $axis_cv (grep { defined } ($price_axis_cv, $atr_axis_cv)) {
         $axis_cv->Tk::bind('<Button-1>', sub {
             my $widget = shift; my $e = $widget->XEvent;
-            $self->{last_axis_y} = $e->y if $e;
             
-            # Pasar a modo manual capturando la escala actual correspondiente
-            if ($axis_cv == $price_axis_cv && $self->{auto_scale}) {
-                if ($self->{price_panel}) {
-                    my ($min, $max) = $self->{price_panel}->get_y_range();
-                    $self->{manual_y_min} = $min;
-                    $self->{manual_y_max} = $max;
-                    $self->set_auto_scale(0); # Actualizar botón
-                }
+            # Solo permitir anclar el arrastre si ya estamos intencionalmente en modo manual
+            if ($axis_cv == $price_axis_cv && $self->{auto_scale} == 0) {
+                $self->{last_axis_y} = $e->y if $e;
             }
-            elsif ($axis_cv == $atr_axis_cv && $self->{atr_auto_scale}) {
-                if ($self->{atr_panel}) {
-                    my ($min, $max) = $self->{atr_panel}->get_y_range();
-                    $self->{atr_manual_y_min} = $min;
-                    $self->{atr_manual_y_max} = $max;
-                    $self->{atr_auto_scale} = 0; 
-                }
+            elsif ($axis_cv == $atr_axis_cv && $self->{atr_auto_scale} == 0) {
+                $self->{last_axis_y} = $e->y if $e;
             }
         });
         
@@ -332,28 +321,29 @@ sub bind_all_canvas {
 
             my $dy = $e->y - $self->{last_axis_y};
             
-            # Aplicar zoom al eje correspondiente
+            # Aplicar zoom al eje correspondiente SOLO en modo manual
             if (abs($dy) > 0) {
                 my $factor = 1 + ($dy * 0.005);
                 $factor = 0.01 if $factor < 0.01;
 
-                if ($axis_cv == $price_axis_cv) {
+                if ($axis_cv == $price_axis_cv && $self->{auto_scale} == 0) {
                     my $rango = $self->{manual_y_max} - $self->{manual_y_min};
                     my $centro = ($self->{manual_y_max} + $self->{manual_y_min}) / 2;
                     my $nuevo_rango = $rango * $factor;
                     $self->{manual_y_max} = $centro + ($nuevo_rango / 2);
                     $self->{manual_y_min} = $centro - ($nuevo_rango / 2);
+                    $self->{last_axis_y} = $e->y;
+                    $self->request_render();
                 } 
-                elsif ($axis_cv == $atr_axis_cv) {
+                elsif ($axis_cv == $atr_axis_cv && $self->{atr_auto_scale} == 0) {
                     my $rango = $self->{atr_manual_y_max} - $self->{atr_manual_y_min};
                     my $centro = ($self->{atr_manual_y_max} + $self->{atr_manual_y_min}) / 2;
                     my $nuevo_rango = $rango * $factor;
                     $self->{atr_manual_y_max} = $centro + ($nuevo_rango / 2);
                     $self->{atr_manual_y_min} = $centro - ($nuevo_rango / 2);
+                    $self->{last_axis_y} = $e->y;
+                    $self->request_render();
                 }
-                
-                $self->{last_axis_y} = $e->y;
-                $self->request_render();
             }
         });
 
@@ -366,7 +356,7 @@ sub bind_events {
     my $mw = $self->{widgets}->{main_window};
     return unless $mw;
 
-    # Teclado para flechas (Mantenemos esto global para comodidad)
+    # Teclado para flechas
     $mw->Tk::bind('<Left>', sub {
         my $market_data = $self->{market_data};
         my $total_candles = $market_data ? $market_data->size() : 0;
@@ -415,10 +405,9 @@ sub compute_intraday_labels {
         }
         $ultimo_dia_visto = $dia_actual if $dia_actual;
 
-        # ¡CORRECCIÓN MAESTRA! Evaluar el índice global ($i), no el relativo
         if ($es_cambio_dia || $i % $salto == 0) {
             push @etiquetas_visibles, {
-                indice_relativo => $i - $start, # Mantenemos el relativo solo para el dibujado X
+                indice_relativo => $i - $start, 
                 timestamp       => $ts,
                 es_cambio_dia   => $es_cambio_dia
             };
@@ -433,13 +422,13 @@ sub vertical_zoom {
     $target ||= 'price';
 
     if ($target eq 'price') {
-        $self->set_auto_scale(0);
+        return if $self->{auto_scale} == 1; # Bloquea si no está en modo manual
         my $rango = $self->{manual_y_max} - $self->{manual_y_min};
         my $cambio = $rango * 0.05 * $factor; 
         $self->{manual_y_max} += $cambio;
         $self->{manual_y_min} -= $cambio;
     } else {
-        $self->{atr_auto_scale} = 0;
+        return if $self->{atr_auto_scale} == 1; # Bloquea si no está en modo manual
         my $rango = $self->{atr_manual_y_max} - $self->{atr_manual_y_min};
         my $cambio = $rango * 0.05 * $factor; 
         $self->{atr_manual_y_max} += $cambio;
@@ -509,9 +498,7 @@ sub reset_view {
     $self->{offset} = 0;   
     $self->set_auto_scale(1);
     
-    # Reiniciar también el panel de volatilidad
     $self->{atr_auto_scale} = 1;
-
     $self->{manual_y_max} = undef;
     $self->{manual_y_min} = undef;
     $self->{atr_manual_y_max} = undef;
