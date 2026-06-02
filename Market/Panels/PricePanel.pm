@@ -12,7 +12,7 @@ sub new {
         scale  => undef,
     };
     die "[ERROR PricePanel]: Objeto Canvas de Tk no recibido.\n" unless $self->{canvas};
-    $self->{canvas}->configure(-bg => '#131722');
+    $self->{canvas}->configure(-bg => '#fbfcf8');
     $self->{canvas}->pack(-side => 'top', -fill => 'both', -expand => 1);
     return bless $self, $class;
 }
@@ -124,9 +124,9 @@ sub render {
 
 sub _init_crosshair_objects {
     my ($self) = @_;
-    my $crosshair_color = '#555555'; 
-    my $label_bg_color  = '#659c39'; 
-    my $label_txt_color = '#ffffff'; 
+    my $crosshair_color = '#a3a6af'; 
+    my $label_bg_color  = '#fff2cc'; 
+    my $label_txt_color = '#131722'; 
 
     # Referencias a los paneles periféricos
     my $time_cv = $self->{engine}->{time_canvas};
@@ -245,7 +245,7 @@ sub draw_time_axis {
         my $font_weight = 'normal';
         
         if ($etiqueta->{es_cambio_dia}) {
-            $color_texto = '#d1d4dc';
+            $color_texto = '#131722';
             $font_weight = 'bold';
             ($hora) = $texto =~ /^(\d{4}-\d{2}-\d{2})/; 
         }
