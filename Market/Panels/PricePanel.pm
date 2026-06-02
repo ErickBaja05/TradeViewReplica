@@ -198,8 +198,15 @@ sub draw_crosshair {
         if ($is_active) {
             $self->{canvas}->coords($self->{crosshair_h_id}, 0, $y, $canvas_width, $y);
             
+            # 1. Obtenemos el valor continuo original de la escala de Ricardo
             my $valor_y = $scale->y_to_value($y);
-            my $valor_fmt = sprintf("%.2f", $valor_y);
+            
+            # 2. APLICAMOS EL TICK SIZE (Saltos de 0.25 en 0.25)
+            # Dividimos para el paso, redondeamos con +0.5 y multiplicamos de vuelta.
+            my $valor_discreto = int(($valor_y / 0.25) + 0.5) * 0.25;
+            
+            # 3. Formateamos uniformemente a dos decimales
+            my $valor_fmt = sprintf("%.2f", $valor_discreto);
 
             # Centrado fijo en el eje lateral (37px)
             $axis_cv->coords($self->{crosshair_y_txt}, 37, $y);
