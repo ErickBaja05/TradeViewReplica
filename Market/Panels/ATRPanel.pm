@@ -12,7 +12,7 @@ sub new {
         scale  => undef, 
     };
     die "[ERROR ATRPanel]: Objeto Canvas de Tk no recibido.\n" unless $self->{canvas};
-    $self->{canvas}->configure(-bg => '#131722');
+    $self->{canvas}->configure(-bg => '#fbfcf8');
     $self->{canvas}->pack(-side => 'bottom', -fill => 'both', -expand => 0);
     return bless $self, $class;
 }
@@ -116,7 +116,7 @@ sub render {
             my $y_current = $scale->value_to_y($atr_val);
 
             if (defined $last_x && defined $last_y) {
-                $self->{canvas}->createLine($last_x, $last_y, $x_current, $y_current, -fill => '#2196f3', -width => 2);
+                $self->{canvas}->createLine($last_x, $last_y, $x_current, $y_current, -fill => '#75bbfd', -width => 2);
             }
             $last_x = $x_current;
             $last_y = $y_current;
@@ -130,7 +130,7 @@ sub render {
 
 sub init_crosshair {
     my ($self) = @_;
-    my $crosshair_color = '#555555';
+    my $crosshair_color = '#a3a6af';
 
     $self->{crosshair_v_id} = $self->{canvas}->createLine(0, 0, 0, 0, -fill => $crosshair_color, -dash => '.');
     $self->{crosshair_h_id} = $self->{canvas}->createLine(0, 0, 0, 0, -fill => $crosshair_color, -dash => '.');
@@ -161,7 +161,7 @@ sub render_last_visible_value {
 
     my $y = $scale->value_to_y($last_atr_val);
     my $canvas_width = $self->{canvas}->Width();
-    my $color = '#2196f3'; 
+    my $color = '#75bbfd'; 
 
     # La línea guía viaja en el main canvas
     $self->{canvas}->createLine(0, $y, $canvas_width, $y, -fill => $color, -dash => '.');
