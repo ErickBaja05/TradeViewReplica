@@ -76,12 +76,8 @@ sub compute_window {
     $start_index = 0 if $start_index < 0;
     $end_index = 0 if $end_index < 0;
 
-    if ($end_index >= $total_candles) {
-        $end_index = $total_candles - 1;
-        $start_index = $end_index - $self->{visible_bars} + 1;
-        $start_index = 0 if $start_index < 0;
-    }
-
+    if ($end_index < 0) { $end_index = 0; }
+    if ($start_index > $end_index) { $start_index = $end_index; }
     return ($start_index, $end_index);
 }
 
@@ -204,7 +200,12 @@ sub bind_all_canvas {
                     my $total_candles = $self->{market_data} ? $self->{market_data}->size() : 0;
                     my $nuevo_offset = $self->{offset} + $velas_desplazadas;
 
-                    if ($nuevo_offset >= 0 && $nuevo_offset < $total_candles - $self->{visible_bars}) {
+                    my $offset_min = -($self->{visible_bars} - 2);
+                    my $offset_max = $total_candles - 2;
+                    if ($nuevo_offset < $offset_min) { $nuevo_offset = $offset_min; }
+                    if ($nuevo_offset > $offset_max) { $nuevo_offset = $offset_max; }
+
+                    if ($self->{offset} != $nuevo_offset) {
                         $self->{offset} = $nuevo_offset;
                         $self->{last_drag_x} = $e->x; 
                         $needs_render = 1;
@@ -355,14 +356,14 @@ sub bind_events {
     $mw->Tk::bind('<Left>', sub {
         my $market_data = $self->{market_data};
         my $total_candles = $market_data ? $market_data->size() : 0;
-        if ($self->{offset} < $total_candles - $self->{visible_bars}) {
+        if ($self->{offset} < $total_candles - 2){
             $self->{offset}++;
             $self->request_render();
         }
     });
 
     $mw->Tk::bind('<Right>', sub {
-        if ($self->{offset} > 0) {
+        if ($self->{offset} > -($self->{visible_bars} - 2)){
             $self->{offset}--;
             $self->request_render();
         }
