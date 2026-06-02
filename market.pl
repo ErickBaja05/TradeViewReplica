@@ -14,7 +14,7 @@ use Market::Indicators::ATR;
 # =========================================================================
 
 # 1. Configuración del contenedor principal de la interfaz gráfica (Tk)
-my $mw = MainWindow->new();
+    my $mw = MainWindow->new();
 $mw->title("Replica Financiera TradingView - EPN");
 $mw->geometry("1720x900");
 
