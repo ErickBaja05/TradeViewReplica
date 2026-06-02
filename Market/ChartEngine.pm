@@ -14,37 +14,37 @@ sub new {
     my ($class, %args) = @_;
 
     my $self = {
-        # Referencias de los Canvas Principales de Renderizado
         market_data       => $args{market_data},
         indicator_manager => $args{indicator_manager},
         price_canvas      => $args{price_canvas},
         atr_canvas        => $args{atr_canvas},
         widgets           => $args{widgets} || {},
 
-        # NUEVO: Referencias a los Canvas dedicados exclusivamente a los ejes
         price_axis_canvas => $args{price_axis_canvas},
         time_canvas       => $args{time_canvas},
         atr_axis_canvas   => $args{atr_axis_canvas},
 
-        # Estado interno de control visual
         visible_bars      => $args{visible_bars} || 100, 
         offset            => $args{offset} || 0,         
         crosshair         => { x => -1, y => -1 },       
         render_pending    => 0,                          
 
-        # Contenedores para las instancias de los paneles independientes
         price_panel       => undef,
         atr_panel         => undef,
 
-        # Estado de Escalas
+        # Estado de Escalas PRECIO
         auto_scale        => 1,      
         manual_y_max      => 100,    
         manual_y_min      => 0,      
+
+        # NUEVO: Estado de Escalas ATR (Volatilidad)
+        atr_auto_scale    => 1,
+        atr_manual_y_max  => 10,
+        atr_manual_y_min  => 0,
     };
 
     bless $self, $class;
 
-    # Instanciación de los paneles correspondientes pasándoles su respectivo canvas principal
     $self->{price_panel} = Market::Panels::PricePanel->new(
         canvas => $self->{price_canvas},
         engine => $self
@@ -101,30 +101,22 @@ sub render {
     my $data_slice = $self->{market_data}->get_slice($start, $end);
     return unless $data_slice && scalar(@$data_slice) > 0;
 
-    # 1. Limpiamos todos los lienzos físicos
     $self->{price_canvas}->delete('all');
     $self->{time_canvas}->delete('all') if $self->{time_canvas};
     $self->{atr_canvas}->delete('all');
     
-    # Limpiamos los ejes si existen
     $self->{price_axis_canvas}->delete('all') if exists $self->{price_axis_canvas} && $self->{price_axis_canvas};
     $self->{atr_axis_canvas}->delete('all') if exists $self->{atr_axis_canvas} && $self->{atr_axis_canvas};
 
-    # ==========================================================
-    # --- ¡EL TRUCO MAESTRO CONTRA EL DESCUADRE (SCROLL DRIFT)! ---
-    # Bloqueamos el scroll nativo secreto de Tk para que las coordenadas
-    # lógicas (x,y) jamás se desfasen de los píxeles de la pantalla.
+    # Bloqueo del scroll nativo
     $self->{price_canvas}->xviewMoveto(0);
     $self->{price_canvas}->yviewMoveto(0);
     $self->{atr_canvas}->xviewMoveto(0);
     $self->{atr_canvas}->yviewMoveto(0);
-    # ==========================================================
 
-    # 2. Renderizamos los paneles
     $self->{price_panel}->render($data_slice) if $self->{price_panel};
     $self->{atr_panel}->render($data_slice)   if $self->{atr_panel};
 
-    # 3. Redibujado forzado de la cruz (El arreglo del Lag que te di antes)
     if (defined $self->{crosshair_x} && defined $self->{crosshair_y}) {
         $self->draw_crosshair_all(
             $self->{crosshair_x}, 
@@ -133,12 +125,6 @@ sub render {
         );
     }
 }
-
-=head2 bind_all_canvas
-
-Conecta los eventos físicos del usuario (mouse, arrastre) y separa la lógica
-de Panning (arrastrar el gráfico) y Zoom Manual (arrastrar los ejes).
-=cut
 
 sub bind_all_canvas {
     my ($self) = @_;
@@ -149,15 +135,13 @@ sub bind_all_canvas {
     my $price_axis_cv = $self->{price_axis_canvas}; 
     my $atr_axis_cv   = $self->{atr_axis_canvas};   
 
-    # --- ¡MAGIA DE UX! CAMBIAR CURSORES AL PASAR EL RATÓN ---
-    $price_axis_cv->configure(-cursor => 'sb_v_double_arrow') if $price_axis_cv; # Flecha vertical
-    $atr_axis_cv->configure(-cursor => 'sb_v_double_arrow')   if $atr_axis_cv;   # Flecha vertical
-    $time_cv->configure(-cursor => 'sb_h_double_arrow')       if $time_cv;       # Flecha horizontal
-    $price_cv->configure(-cursor => 'crosshair')              if $price_cv;      # Cruz estándar
-    $atr_cv->configure(-cursor => 'crosshair')                if $atr_cv;        # Cruz estándar
-    # --------------------------------------------------------
+    # Cursores dinámicos
+    $price_axis_cv->configure(-cursor => 'sb_v_double_arrow') if $price_axis_cv; 
+    $atr_axis_cv->configure(-cursor => 'sb_v_double_arrow')   if $atr_axis_cv;   
+    $time_cv->configure(-cursor => 'sb_h_double_arrow')       if $time_cv;       
+    $price_cv->configure(-cursor => 'crosshair')              if $price_cv;      
+    $atr_cv->configure(-cursor => 'crosshair')                if $atr_cv;        
 
-    # 1. EVENTOS BÁSICOS: Redimensionar ventana y Crosshair (En TODAS las cajas)
     for my $cv (grep { defined } ($price_cv, $time_cv, $atr_cv, $price_axis_cv, $atr_axis_cv)) {
         $cv->Tk::bind('<Configure>', sub { $self->request_render(); });
         $cv->Tk::bind('<Motion>', sub { 
@@ -166,7 +150,42 @@ sub bind_all_canvas {
     }
 
     # ==========================================================
-    # LÓGICA 1: ARRASTRE 2D (PANNING) - SOLO EN PANELES DE VELAS Y ATR
+    # NUEVO: LÓGICA DE RUEDA DEL RATÓN (ZOOM) AISLADA POR CANVAS
+    # ==========================================================
+    
+    # 1. Zoom Horizontal (Solo si el mouse está sobre las velas o el ATR)
+    for my $cv (grep { defined } ($price_cv, $atr_cv)) {
+        $cv->Tk::bind('<Button-4>', sub { 
+            my $e = shift->XEvent; $self->horizontal_zoom(1, $e->x, ($e->s & 4)?1:0) if $e; 
+        });
+        $cv->Tk::bind('<Button-5>', sub { 
+            my $e = shift->XEvent; $self->horizontal_zoom(-1, $e->x, ($e->s & 4)?1:0) if $e; 
+        });
+    }
+
+    # 2. Zoom Vertical en Eje de Precios (Solo si está en Manual)
+    if ($price_axis_cv) {
+        $price_axis_cv->Tk::bind('<Button-4>', sub { 
+            $self->vertical_zoom(1, 'price') if $self->{auto_scale} == 0; 
+        });
+        $price_axis_cv->Tk::bind('<Button-5>', sub { 
+            $self->vertical_zoom(-1, 'price') if $self->{auto_scale} == 0; 
+        });
+    }
+
+    # 3. Zoom Vertical en Eje de Volatilidad ATR (Solo si está en Manual)
+    if ($atr_axis_cv) {
+        $atr_axis_cv->Tk::bind('<Button-4>', sub { 
+            $self->vertical_zoom(1, 'atr') if $self->{atr_auto_scale} == 0; 
+        });
+        $atr_axis_cv->Tk::bind('<Button-5>', sub { 
+            $self->vertical_zoom(-1, 'atr') if $self->{atr_auto_scale} == 0; 
+        });
+    }
+
+
+    # ==========================================================
+    # LÓGICA 1: ARRASTRE 2D (PANNING)
     # ==========================================================
     for my $canvas (grep { defined } ($price_cv, $atr_cv)) {
         $canvas->Tk::bind('<Button-1>', sub {
@@ -181,7 +200,6 @@ sub bind_all_canvas {
             my $widget = shift; my $e = $widget->XEvent;
             return unless $e && defined $self->{last_drag_x} && defined $self->{last_drag_y};
             
-            # Memoria del crosshair para evitar lag
             $self->{crosshair_x} = $e->x;
             $self->{crosshair_y} = $e->y;
             $self->{crosshair_w} = $widget;
@@ -190,7 +208,7 @@ sub bind_all_canvas {
             my $delta_y = $e->y - $self->{last_drag_y};
             my $needs_render = 0;
 
-            # A. Panning Horizontal (Viajar en el tiempo)
+            # A. Panning Horizontal
             if (defined $self->{price_panel} && defined $self->{price_panel}->{scale}) {
                 my $plot_width = $self->{price_panel}->{scale}->{width} || 1;
                 my $candle_width = ($plot_width / ($self->{visible_bars} || 1)) || 1;
@@ -213,21 +231,26 @@ sub bind_all_canvas {
                 }
             }
 
-            # B. Panning Vertical (Mover la cámara del precio)
-            if ($delta_y != 0 && $canvas == $price_cv) {
+            # B. Panning Vertical (Separado por panel)
+            if ($delta_y != 0) {
+                my $canvas_height = $canvas->Height() || 400;
 
-                if ($self->{auto_scale} == 0)
-                {
-                    my $canvas_height = $canvas->Height() || 400;
+                if ($canvas == $price_cv && $self->{auto_scale} == 0) {
                     my $rango = $self->{manual_y_max} - $self->{manual_y_min};
                     my $desplazamiento = ($delta_y / $canvas_height) * $rango;
-
                     $self->{manual_y_max} += $desplazamiento;
                     $self->{manual_y_min} += $desplazamiento;
+                    $self->{last_drag_y} = $e->y;
+                    $needs_render = 1;
+                } 
+                elsif ($canvas == $atr_cv && $self->{atr_auto_scale} == 0) {
+                    my $rango = $self->{atr_manual_y_max} - $self->{atr_manual_y_min};
+                    my $desplazamiento = ($delta_y / $canvas_height) * $rango;
+                    $self->{atr_manual_y_max} += $desplazamiento;
+                    $self->{atr_manual_y_min} += $desplazamiento;
+                    $self->{last_drag_y} = $e->y;
+                    $needs_render = 1;
                 }
-
-                $self->{last_drag_y} = $e->y;
-                $needs_render = 1;
             }
 
             $self->request_render() if $needs_render;
@@ -259,13 +282,9 @@ sub bind_all_canvas {
             my $dx = $e->x - $self->{last_axis_x};
             if (abs($dx) > 0) {
                 my $current_bars = $self->{visible_bars} || 100;
-                
-                # MATEMÁTICA DEL ZOOM X:
-                # dx > 0 (arrastrar derecha) = Estirar gráfico (mostrar menos velas)
-                # dx < 0 (arrastrar izquierda) = Comprimir gráfico (mostrar más velas)
                 my $factor = 1 - ($dx * 0.005); 
                 my $new_bars = $current_bars * $factor;
-                $new_bars = 2 if $new_bars < 2; # Límite mínimo
+                $new_bars = 2 if $new_bars < 2; 
 
                 $self->{visible_bars} = $self->round($new_bars);
                 $self->{last_axis_x} = $e->x;
@@ -277,19 +296,28 @@ sub bind_all_canvas {
     }
 
     # ==========================================================
-    # LÓGICA 3: ZOOM VERTICAL MANUAL EN EJES Y (Precios)
+    # LÓGICA 3: ZOOM VERTICAL MANUAL EN EJES Y (Precios y ATR)
     # ==========================================================
     for my $axis_cv (grep { defined } ($price_axis_cv, $atr_axis_cv)) {
         $axis_cv->Tk::bind('<Button-1>', sub {
             my $widget = shift; my $e = $widget->XEvent;
             $self->{last_axis_y} = $e->y if $e;
             
-            # Pasar a modo manual capturando la escala actual del precio
+            # Pasar a modo manual capturando la escala actual correspondiente
             if ($axis_cv == $price_axis_cv && $self->{auto_scale}) {
                 if ($self->{price_panel}) {
                     my ($min, $max) = $self->{price_panel}->get_y_range();
                     $self->{manual_y_min} = $min;
                     $self->{manual_y_max} = $max;
+                    $self->set_auto_scale(0); # Actualizar botón
+                }
+            }
+            elsif ($axis_cv == $atr_axis_cv && $self->{atr_auto_scale}) {
+                if ($self->{atr_panel}) {
+                    my ($min, $max) = $self->{atr_panel}->get_y_range();
+                    $self->{atr_manual_y_min} = $min;
+                    $self->{atr_manual_y_max} = $max;
+                    $self->{atr_auto_scale} = 0; 
                 }
             }
         });
@@ -304,22 +332,25 @@ sub bind_all_canvas {
 
             my $dy = $e->y - $self->{last_axis_y};
             
-            # Solo aplicamos escala manual al eje de los precios
-            if (abs($dy) > 0 && $axis_cv == $price_axis_cv) {
-                my $rango = $self->{manual_y_max} - $self->{manual_y_min};
-                
-                # MATEMÁTICA DEL ZOOM Y (ESTIRAR / APLASTAR):
-                # dy > 0 (arrastrar abajo) = Comprimir velas (Aumentar rango numérico)
-                # dy < 0 (arrastrar arriba) = Estirar velas (Disminuir rango numérico)
+            # Aplicar zoom al eje correspondiente
+            if (abs($dy) > 0) {
                 my $factor = 1 + ($dy * 0.005);
-                $factor = 0.01 if $factor < 0.01; # Blindaje matemático
-                
-                my $centro = ($self->{manual_y_max} + $self->{manual_y_min}) / 2;
-                my $nuevo_rango = $rango * $factor;
-                
-                # Expandir o contraer desde el centro visual exacto
-                $self->{manual_y_max} = $centro + ($nuevo_rango / 2);
-                $self->{manual_y_min} = $centro - ($nuevo_rango / 2);
+                $factor = 0.01 if $factor < 0.01;
+
+                if ($axis_cv == $price_axis_cv) {
+                    my $rango = $self->{manual_y_max} - $self->{manual_y_min};
+                    my $centro = ($self->{manual_y_max} + $self->{manual_y_min}) / 2;
+                    my $nuevo_rango = $rango * $factor;
+                    $self->{manual_y_max} = $centro + ($nuevo_rango / 2);
+                    $self->{manual_y_min} = $centro - ($nuevo_rango / 2);
+                } 
+                elsif ($axis_cv == $atr_axis_cv) {
+                    my $rango = $self->{atr_manual_y_max} - $self->{atr_manual_y_min};
+                    my $centro = ($self->{atr_manual_y_max} + $self->{atr_manual_y_min}) / 2;
+                    my $nuevo_rango = $rango * $factor;
+                    $self->{atr_manual_y_max} = $centro + ($nuevo_rango / 2);
+                    $self->{atr_manual_y_min} = $centro - ($nuevo_rango / 2);
+                }
                 
                 $self->{last_axis_y} = $e->y;
                 $self->request_render();
@@ -335,24 +366,7 @@ sub bind_events {
     my $mw = $self->{widgets}->{main_window};
     return unless $mw;
 
-    # Control de zoom mediante la rueda del ratón (Linux / X11 compatibility)
-    $mw->Tk::bind('<Button-4>', sub { 
-        my $widget = shift; my $e = $widget->XEvent;
-        if ($e) {
-            my $has_ctrl = ($e->s & 4) ? 1 : 0; 
-            $self->horizontal_zoom(1, $e->x, $has_ctrl); 
-        }
-    });
-
-    $mw->Tk::bind('<Button-5>', sub { 
-        my $widget = shift; my $e = $widget->XEvent;
-        if ($e) {
-            my $has_ctrl = ($e->s & 4) ? 1 : 0;
-            $self->horizontal_zoom(-1, $e->x, $has_ctrl); 
-        }
-    });
-
-    # Control de desplazamiento fino con las flechas del teclado
+    # Teclado para flechas (Mantenemos esto global para comodidad)
     $mw->Tk::bind('<Left>', sub {
         my $market_data = $self->{market_data};
         my $total_candles = $market_data ? $market_data->size() : 0;
@@ -369,7 +383,6 @@ sub bind_events {
         }
     });
 
-    # Atajos de teclado nativos para restaurar la vista
     $mw->Tk::bind('<Key-r>', sub { $self->reset_view(); });
     $mw->Tk::bind('<Key-R>', sub { $self->reset_view(); });
 }
@@ -387,7 +400,6 @@ sub compute_intraday_labels {
     $salto = 50 if $visibles > 500;
 
     my $ultimo_dia_visto = "";
-    my $posicion_relativa = 0;
 
     for my $i ($start .. $end) {
         my $vela = $velas->[$i];
@@ -403,44 +415,42 @@ sub compute_intraday_labels {
         }
         $ultimo_dia_visto = $dia_actual if $dia_actual;
 
-        if ($es_cambio_dia || $posicion_relativa % $salto == 0) {
+        # ¡CORRECCIÓN MAESTRA! Evaluar el índice global ($i), no el relativo
+        if ($es_cambio_dia || $i % $salto == 0) {
             push @etiquetas_visibles, {
-                indice_relativo => $posicion_relativa,
+                indice_relativo => $i - $start, # Mantenemos el relativo solo para el dibujado X
                 timestamp       => $ts,
                 es_cambio_dia   => $es_cambio_dia
             };
         }
-        $posicion_relativa++;
     }
 
     return \@etiquetas_visibles;
 }
 
-sub _vertical_drag {
-    my ($self, $dy) = @_;
-    $self->{auto_scale} = 0;
-    my $rango = $self->{manual_y_max} - $self->{manual_y_min};
-    my $desplazamiento = ($dy / 400) * $rango;
-
-    $self->{manual_y_max} += $desplazamiento;
-    $self->{manual_y_min} += $desplazamiento;
-    $self->request_render();
-}
-
 sub vertical_zoom {
-    my ($self, $factor) = @_;
-    $self->{auto_scale} = 0;
-    my $rango = $self->{manual_y_max} - $self->{manual_y_min};
-    my $cambio = $rango * 0.05 * $factor; 
+    my ($self, $factor, $target) = @_;
+    $target ||= 'price';
 
-    $self->{manual_y_max} += $cambio;
-    $self->{manual_y_min} -= $cambio;
+    if ($target eq 'price') {
+        $self->set_auto_scale(0);
+        my $rango = $self->{manual_y_max} - $self->{manual_y_min};
+        my $cambio = $rango * 0.05 * $factor; 
+        $self->{manual_y_max} += $cambio;
+        $self->{manual_y_min} -= $cambio;
+    } else {
+        $self->{atr_auto_scale} = 0;
+        my $rango = $self->{atr_manual_y_max} - $self->{atr_manual_y_min};
+        my $cambio = $rango * 0.05 * $factor; 
+        $self->{atr_manual_y_max} += $cambio;
+        $self->{atr_manual_y_min} -= $cambio;
+    }
+    
     $self->request_render();
 }
 
 sub set_timeframe {
     my ($self, $tf) = @_;
-    # Conexión directa con el método de agregación temporal de la capa de datos
     $self->{market_data}->set_timeframe($tf) if $self->{market_data} && $self->{market_data}->can('set_timeframe');
     $self->reset_view(); 
 }
@@ -449,14 +459,10 @@ sub on_mouse_move {
     my ($self, $event) = @_;
     return unless $event;
 
-    # 1. MEMORIA: Guardamos las coordenadas exactas todo el tiempo
     $self->{crosshair_x} = $event->x;
     $self->{crosshair_y} = $event->y;
-    $self->{crosshair_w} = $event->W; # Guardamos en qué caja está el ratón
+    $self->{crosshair_w} = $event->W;
 
-    my $x = $event->x;
-
-    # 2. Dibujamos la cruz
     $self->draw_crosshair_all($event->x, $event->y, $event->W);
 }
 
@@ -490,42 +496,30 @@ sub horizontal_zoom {
         my $barras_perdidas = $current_bars - $new_bars;
         
         $self->{offset} += ($barras_perdidas * (1 - $porcentaje_pantalla));
-        $self->{offset} = 0 if $self->{offset} < 0;
     }
 
     $self->{visible_bars} = $self->round($new_bars);
     $self->request_render();
 }
 
-=head2 reset_view
-
-Restaura la vista del gráfico a su estado original "por defecto" (TradingView Auto-Fit).
-Limpia la memoria de arrastres y centra el panorama temporal.
-=cut
-
 sub reset_view {
     my ($self) = @_;
     
-    # 1. Estándar visual: 150 velas logran la proporción exacta de TradingView 
-    # para pantallas HD (puedes subirlo a 200 si quieres que se vea aún más alejado)
     $self->{visible_bars} = 150; 
-    
-    # 2. Restaurar scroll al presente (vuelve a pegar la última vela a la derecha)
     $self->{offset} = 0;   
-    
-    # 3. Reactivar el Auto-Scale (Devolverle el control a la cámara del motor)
     $self->set_auto_scale(1);
+    
+    # Reiniciar también el panel de volatilidad
+    $self->{atr_auto_scale} = 1;
 
-    # 4. BLINDAJE: Limpiar cualquier memoria manual residual 
-    # para asegurar un cálculo 100% fresco en los paneles
     $self->{manual_y_max} = undef;
     $self->{manual_y_min} = undef;
+    $self->{atr_manual_y_max} = undef;
+    $self->{atr_manual_y_min} = undef;
 
-    # 5. BLINDAJE: Limpiar memoria del ratón por si se quedó congelado a medio drag
     $self->{last_drag_x}  = undef;
     $self->{last_drag_y}  = undef;
 
-    # 6. Forzar el fotograma en limpio
     $self->request_render();
 }
 
@@ -543,16 +537,11 @@ sub get_all_timestamps {
     return \@timestamps;
 }
 
-=head2 set_auto_scale
-Cambia el modo de escala y sincroniza visualmente el botón de la interfaz.
-=cut
-
 sub set_auto_scale {
     my ($self, $mode) = @_;
     
     $self->{auto_scale} = $mode;
 
-    # Buscamos si nos pasaste el botón desde market.pl y lo actualizamos
     if (my $btn = $self->{widgets}->{scale_btn}) {
         $btn->configure(
             -text => $mode ? "Escala: Auto" : "Escala: Manual",

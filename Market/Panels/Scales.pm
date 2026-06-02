@@ -14,7 +14,6 @@ sub new
         y_min         => $args{y_min}         || 0,
         y_max         => $args{y_max}         || 1,
         
-        # CORRECCIÓN VITAL: Usar 'defined' en lugar de '||' para permitir márgenes de valor 0
         margin_left   => defined $args{margin_left}   ? $args{margin_left}   : 0,
         margin_right  => defined $args{margin_right}  ? $args{margin_right}  : 65,
         margin_top    => defined $args{margin_top}    ? $args{margin_top}    : 10,
@@ -76,7 +75,6 @@ sub y_to_value {
     return ($normalized * $range) + $self->{y_min};
 }
 
-# Modificado para recibir el canvas independiente del eje Y
 sub _draw_y_scale {
     my ($self, $canvas, $axis_canvas) = @_;
     return unless $canvas;
@@ -86,26 +84,64 @@ sub _draw_y_scale {
 
     my $grid_color = '#1f2933'; 
     my $text_color = '#787b86'; 
-    my $num_lines  = 6;         
-    my $step       = $range / $num_lines;
-
     my $plot_width = $self->{width}; 
 
     # Borde separador derecho en el canvas principal
     $canvas->createLine($plot_width - 1, 0, $plot_width - 1, $self->{height}, -fill => $grid_color);
 
-    for my $i (1 .. $num_lines - 1) {
-        my $value = $self->{y_min} + ($i * $step);
+    # --- MAGIA TRADINGVIEW: CÁLCULO DINÁMICO DE EJES ---
+    
+    # 1. Definimos una separación cómoda a la vista (aprox. 50 píxeles entre líneas)
+    my $target_pixels = 50;
+    my $target_lines = $self->{height} / $target_pixels;
+    $target_lines = 2 if $target_lines < 2;
+
+    # 2. ¿Cuánto valor de mercado representa ese salto ideal?
+    my $raw_step = $range / $target_lines;
+
+    # 3. Matemáticas puras para "redondear" el salto (ej. 1, 2, 5, 10, 50, 100...) usando logaritmos
+    my $log10 = log($raw_step) / log(10);
+    
+    # Emulación de la función matemática "floor" nativa en Perl para evitar importar módulos
+    my $mag_power = $log10 < 0 ? int($log10) - 1 : int($log10); 
+    $mag_power = int($log10) if $log10 == int($log10);
+    
+    my $mag = 10 ** $mag_power;
+    my $norm_step = $raw_step / $mag;
+    
+    my $nice_step;
+    if    ($norm_step < 1.5) { $nice_step = 1; }
+    elsif ($norm_step < 3)   { $nice_step = 2; }
+    elsif ($norm_step < 7)   { $nice_step = 5; }
+    else                     { $nice_step = 10; }
+    
+    my $step = $nice_step * $mag;
+
+    # 4. Encontrar el primer valor exacto de la grilla que aparece en pantalla
+    my $first_val = int($self->{y_min} / $step) * $step;
+    $first_val += $step if $first_val < $self->{y_min};
+
+    # 5. Dibujamos iterando dinámicamente hasta salirnos por arriba de la pantalla
+    for (my $value = $first_val; $value <= $self->{y_max}; $value += $step) {
         my $y = $self->value_to_y($value);
-        my $fmt_value = ($range < 10) ? sprintf("%.4f", $value) : sprintf("%.2f", $value);
+        
+        # Formateo inteligente según la escala del salto para que los precios pequeños se vean bien
+        my $fmt_value;
+        if ($step >= 1) {
+            $fmt_value = sprintf("%.2f", $value);
+        } elsif ($step >= 0.01) {
+            $fmt_value = sprintf("%.2f", $value);
+        } else {
+            $fmt_value = sprintf("%.4f", $value);
+        }
 
         # Cuadrícula horizontal en el lienzo de las velas
         $canvas->createLine(0, $y, $plot_width, $y, -fill => $grid_color, -dash => '.');
 
-        # Los números se envían exclusivamente al lienzo lateral (si existe)
+        # Los números se envían exclusivamente al lienzo lateral que armamos (si existe)
         if ($axis_canvas) {
             $axis_canvas->createText(
-                37, $y, # 37 = Centro del canvas lateral de 75px
+                37, $y, # 37px asegura que el texto esté centrado en el panel derecho de 75px
                 -text => $fmt_value,
                 -fill => $text_color,
                 -font => ['Helvetica', 9]
@@ -113,4 +149,5 @@ sub _draw_y_scale {
         }
     }
 }
+
 1;
