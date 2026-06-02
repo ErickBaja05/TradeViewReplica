@@ -72,7 +72,7 @@ sub set_scale {
 
     $self->{scale} = Market::Panels::Scales->new(
         width        => $width,
-        height       => $height,
+        height       => $height / 2,
         visible_bars => $visible_bars,
         offset       => $scale_offset, 
         y_min        => $min_y,
