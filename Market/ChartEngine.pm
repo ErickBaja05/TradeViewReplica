@@ -356,6 +356,23 @@ sub bind_events {
     my $mw = $self->{widgets}->{main_window};
     return unless $mw;
 
+    # Control de zoom mediante la rueda del ratón (Linux / X11 compatibility)
+    $mw->Tk::bind('<Button-4>', sub { 
+        my $widget = shift; my $e = $widget->XEvent;
+        if ($e) {
+            my $has_ctrl = ($e->s & 4) ? 1 : 0; 
+            $self->horizontal_zoom(1, $e->x, $has_ctrl); 
+        }
+    });
+
+    $mw->Tk::bind('<Button-5>', sub { 
+        my $widget = shift; my $e = $widget->XEvent;
+        if ($e) {
+            my $has_ctrl = ($e->s & 4) ? 1 : 0;
+            $self->horizontal_zoom(-1, $e->x, $has_ctrl); 
+        }
+    });
+
     # Teclado para flechas
     $mw->Tk::bind('<Left>', sub {
         my $market_data = $self->{market_data};
@@ -544,36 +561,38 @@ sub horizontal_zoom {
     my $new_bars = $current_bars + ($delta > 0 ? -$bars_change : $bars_change);
     $new_bars = 2 if $new_bars < 2;
 
-    if (defined $mouse_x && defined $self->{price_panel} && defined $self->{price_panel}->{scale}) {
+    if (defined $self->{price_panel} && defined $self->{price_panel}->{scale}) {
         my $scale = $self->{price_panel}->{scale};
         my $total_candles = $self->{market_data} ? $self->{market_data}->size() : 0;
-        
-        # TradingView ancla el zoom al mouse SIEMPRE cuando el cursor está en el gráfico
-        my $anchor_x = $mouse_x;
 
-        # 1. Obtenemos el índice exacto (decimal) que está bajo el ratón ahora mismo
-        my $exact_index = $scale->x_to_index_float($anchor_x);
-        
-        # 2. Calculamos el nuevo ancho de las velas
         my $plot_width = $scale->{width} - $scale->{margin_left} - $scale->{margin_right};
         $plot_width = 1 if $plot_width <= 0;
         my $new_candle_width = $plot_width / $new_bars;
-        
-        # 3. Matemáticas de traslación inversa:
-        # Despejamos matemáticamente dónde debe iniciar la cámara (offset)
-        # para que el 'exact_index' se mantenga estático en la coordenada 'anchor_x'
-        my $new_scale_offset = $exact_index - (($anchor_x - $scale->{margin_left}) / $new_candle_width);
-        my $nuevo_offset = $total_candles - $new_bars - $new_scale_offset;
-        
-        # 4. BLINDAJE MATEMÁTICO DE LÍMITES
-        # Esto evita que la cámara pase de largo cuando haces zoom en el espacio en blanco
-        # forzando a que las 2 últimas velas se expandan visualmente.
-        my $offset_min = -($new_bars - 2); 
+
+        my $nuevo_offset;
+
+        if ($has_ctrl && defined $mouse_x) {
+            # CTRL: ancla al índice exacto bajo el cursor del ratón.
+            # La vela apuntada se queda estática en la misma posición X de pantalla.
+            my $exact_index = $scale->x_to_index_float($mouse_x);
+            my $new_scale_offset = $exact_index - (($mouse_x - $scale->{margin_left}) / $new_candle_width);
+            $nuevo_offset = $total_candles - $new_bars - $new_scale_offset;
+        } else {
+            # SIN CTRL (comportamiento TradingView por defecto): ancla la última vela
+            # visible al borde derecho del gráfico. El offset actual ya expresa cuántas
+            # velas desde el final estamos desplazados; sólo necesitamos preservarlo.
+            # La última vela visible tiene índice: total_candles - 1 - offset_actual.
+            # Queremos que ese mismo índice siga siendo el último tras el zoom, por lo
+            # tanto el nuevo offset es idéntico al actual (el borde derecho no se mueve).
+            $nuevo_offset = $self->{offset};
+        }
+
+        # Blindaje de límites
+        my $offset_min = -($new_bars - 2);
         my $offset_max = $total_candles - 2;
-        
         $nuevo_offset = $offset_min if $nuevo_offset < $offset_min;
         $nuevo_offset = $offset_max if $nuevo_offset > $offset_max;
-        
+
         $self->{offset} = $nuevo_offset;
     }
 
