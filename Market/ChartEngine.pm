@@ -390,27 +390,62 @@ sub compute_intraday_labels {
     $salto = 50 if $visibles > 500;
 
     my $ultimo_dia_visto = "";
+    my %cambios_de_dia;
 
+    # FASE 1: Identificar índices absolutos donde cambia el día
     for my $i ($start .. $end) {
         my $vela = $velas->[$i];
         last unless $vela;
         my $ts = $vela->{time} || "";
-
         my ($dia_actual) = $ts =~ /^(\d{4}-\d{2}-\d{2})/;
         $dia_actual //= "";
 
-        my $es_cambio_dia = 0;
         if ($dia_actual ne $ultimo_dia_visto && $ultimo_dia_visto ne "") {
-            $es_cambio_dia = 1;
+            $cambios_de_dia{$i} = 1;
         }
         $ultimo_dia_visto = $dia_actual if $dia_actual;
+    }
 
-        if ($es_cambio_dia || $i % $salto == 0) {
+    $ultimo_dia_visto = "";
+    
+    # FASE 2: Construir etiquetas ancladas a la vela real (Permite paneo fluido)
+    for my $i ($start .. $end) {
+        my $vela = $velas->[$i];
+        last unless $vela;
+        my $ts = $vela->{time} || "";
+        my ($dia_actual) = $ts =~ /^(\d{4}-\d{2}-\d{2})/;
+        $dia_actual //= "";
+        $ultimo_dia_visto = $dia_actual if $dia_actual;
+
+        # Si es un cambio de día, lo dibujamos siempre (en negrita en el PricePanel)
+        if ($cambios_de_dia{$i}) {
             push @etiquetas_visibles, {
                 indice_relativo => $i - $start, 
                 timestamp       => $ts,
-                es_cambio_dia   => $es_cambio_dia
+                es_cambio_dia   => 1
             };
+        } 
+        # Si es una etiqueta normal de minutos
+        elsif ($i % $salto == 0) {
+            # Evitar solapamiento: No dibujar si hay un cambio de día muy cerca
+            my $colision = 0;
+            my $tolerancia = int($salto * 0.25); # 25% de tolerancia de colisión
+            $tolerancia = 1 if $tolerancia < 1;
+            
+            for my $j ($i - $tolerancia .. $i + $tolerancia) {
+                if ($cambios_de_dia{$j}) {
+                    $colision = 1;
+                    last;
+                }
+            }
+
+            if (!$colision) {
+                push @etiquetas_visibles, {
+                    indice_relativo => $i - $start, 
+                    timestamp       => $ts,
+                    es_cambio_dia   => 0
+                };
+            }
         }
     }
 
@@ -484,10 +519,23 @@ sub horizontal_zoom {
         my $porcentaje_pantalla = $mouse_x / $canvas_width;
         my $barras_perdidas = $current_bars - $new_bars;
         
-        $self->{offset} += ($barras_perdidas * (1 - $porcentaje_pantalla));
+        # Traslación geométrica exacta
+        my $nuevo_offset = $self->{offset} + ($barras_perdidas * (1 - $porcentaje_pantalla));
+        
+        # --- BLINDAJE MATEMÁTICO DE LÍMITES ---
+        # Evita que el zoom rompa las físicas de la cámara en los extremos vacíos
+        my $total_candles = $self->{market_data} ? $self->{market_data}->size() : 0;
+        my $offset_min = -($new_bars - 2);
+        my $offset_max = $total_candles - 2;
+        
+        $nuevo_offset = $offset_min if $nuevo_offset < $offset_min;
+        $nuevo_offset = $offset_max if $nuevo_offset > $offset_max;
+        
+        $self->{offset} = $nuevo_offset;
     }
 
-    $self->{visible_bars} = $self->round($new_bars);
+    # Asignamos sin redondear a entero para garantizar fluidez absoluta
+    $self->{visible_bars} = $new_bars;
     $self->request_render();
 }
 

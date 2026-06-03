@@ -13,10 +13,13 @@ use Market::Indicators::ATR;
 #   FASES DE EJECUCIÓN CENTRAL (MARKET.PL)
 # =========================================================================
 
-# 1. Configuración del contenedor principal de la interfaz gráfica (Tk)
-    my $mw = MainWindow->new();
+my $mw = MainWindow->new();
 $mw->title("Replica Financiera TradingView - EPN");
-$mw->geometry("1720x900");
+
+my $width  = $mw->screenwidth;
+my $height = $mw->screenheight;
+
+$mw->geometry("${width}x${height}+0+0");
 
 # --- BARRA SUPERIOR DE CONTROL DE INTERFAZ ---
 my $control_panel = $mw->Frame(-bg => '#fbfcf8', -relief => 'raised', -bd => 1)

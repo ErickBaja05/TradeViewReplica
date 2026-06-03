@@ -232,12 +232,12 @@ sub draw_time_axis {
     my $etiquetas = $self->{engine}->compute_intraday_labels();
     return unless $etiquetas && scalar(@$etiquetas) > 0;
 
-    # Recuperar el lienzo exclusivo para el tiempo
     my $time_cv = $self->{engine}->{time_canvas};
     return unless $time_cv;
 
     my $scale = $self->{scale};
     my ($start_index, $end_index) = $self->{engine}->compute_window();
+    my $canvas_height = $self->{canvas}->Height();
 
     for my $etiqueta (@$etiquetas) {
         my $pos_relativa = $etiqueta->{indice_relativo} // 0;
@@ -245,24 +245,29 @@ sub draw_time_axis {
         my $x = $scale->index_to_center_x($absolute_index);
         
         my $texto = $etiqueta->{timestamp};
-        my ($hora) = $texto =~ /T(\d{2}:\d{2})/;
+        my ($hora) = $texto =~ /T?(\d{2}:\d{2})/;
         $hora //= $texto; 
 
         my $color_texto = '#787b86';
         my $font_weight = 'normal';
         
         if ($etiqueta->{es_cambio_dia}) {
-            $color_texto = '#131722';
+            $color_texto = '#000000';
             $font_weight = 'bold';
-            ($hora) = $texto =~ /^(\d{4}-\d{2}-\d{2})/; 
+            
+            # --- ¡AQUÍ ESTÁ LA MAGIA! ---
+            # Extraemos solo el día (los dos últimos dígitos de la fecha YYYY-MM-DD)
+            if ($texto =~ /^\d{4}-\d{2}-(\d{2})/) {
+                $hora = int($1); # int() quita el cero a la izquierda (ej: "05" -> "5")
+            }
+            
         }
         
-        # Se inyecta en la mitad del canvas temporal
         $time_cv->createText(
             $x, 12,
             -text => $hora,
             -fill => $color_texto,
-            -font => ['Helvetica', 9, $font_weight]
+            -font => ['Helvetica', 10, $font_weight]
         );
     }
 }
