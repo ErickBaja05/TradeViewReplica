@@ -113,7 +113,8 @@ sub render {
     $self->{price_canvas}->yviewMoveto(0);
     $self->{atr_canvas}->xviewMoveto(0);
     $self->{atr_canvas}->yviewMoveto(0);
-
+    $self->{time_canvas}->yviewMoveto(0) if $self->{time_canvas};
+    
     $self->{price_panel}->render($data_slice) if $self->{price_panel};
     $self->{atr_panel}->render($data_slice)   if $self->{atr_panel};
 
