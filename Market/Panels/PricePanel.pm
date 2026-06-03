@@ -124,8 +124,8 @@ sub render {
 
 sub _init_crosshair_objects {
     my ($self) = @_;
-    my $crosshair_color = '#a3a6af'; 
-    my $label_bg_color  = '#fff2cc'; 
+    my $crosshair_color = '#4b4b4c'; 
+    my $label_bg_color  = '#d8b240'; 
     my $label_txt_color = '#131722'; 
 
     # Referencias a los paneles periféricos
@@ -248,7 +248,7 @@ sub draw_time_axis {
         my ($hora) = $texto =~ /T?(\d{2}:\d{2})/;
         $hora //= $texto; 
 
-        my $color_texto = '#787b86';
+        my $color_texto = '#4b4b4c';
         my $font_weight = 'normal';
         
         if ($etiqueta->{es_cambio_dia}) {
