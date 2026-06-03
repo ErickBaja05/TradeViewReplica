@@ -487,6 +487,36 @@ sub on_mouse_move {
     $self->{crosshair_y} = $event->y;
     $self->{crosshair_w} = $event->W;
 
+    # --- LA MAGIA DE LA MANITO (Hitbox 2D) ---
+    if ($event->W == $self->{price_canvas} && $self->{price_panel} && $self->{price_panel}->{scale}) {
+        my $scale = $self->{price_panel}->{scale};
+        
+        # Buscamos qué vela está exactamente bajo la coordenada X del ratón
+        my $idx = int($scale->x_to_index($event->x));
+        my $candle = $self->{market_data} ? $self->{market_data}->get_candle($idx) : undef;
+
+        my $cursor = 'crosshair'; # Cursor de cruz por defecto
+
+        if ($candle) {
+            # Calculamos dónde empiezan y terminan las mechas en el eje Y
+            my $y_high = $scale->value_to_y($candle->{high});
+            my $y_low  = $scale->value_to_y($candle->{low});
+
+            # En Tk, el eje Y crece hacia abajo (0 es arriba). 
+            # Calculamos el límite superior e inferior reales:
+            my $min_y = $y_high < $y_low ? $y_high : $y_low;
+            my $max_y = $y_high > $y_low ? $y_high : $y_low;
+
+            # Damos +/- 5 píxeles de tolerancia (hitbox) para facilitar la selección
+            if ($event->y >= ($min_y - 5) && $event->y <= ($max_y + 5)) {
+                $cursor = 'hand2'; # ¡Cambiamos a la manito!
+            }
+        }
+        
+        # Aplicamos el cursor instantáneamente
+        $self->{price_canvas}->configure(-cursor => $cursor);
+    }
+
     $self->draw_crosshair_all($event->x, $event->y, $event->W);
 }
 
@@ -514,18 +544,31 @@ sub horizontal_zoom {
     my $new_bars = $current_bars + ($delta > 0 ? -$bars_change : $bars_change);
     $new_bars = 2 if $new_bars < 2;
 
-    if ($has_ctrl && defined $mouse_x && defined $self->{price_panel}) {
-        my $canvas_width = $self->{price_canvas}->Width() || 1;
-        my $porcentaje_pantalla = $mouse_x / $canvas_width;
-        my $barras_perdidas = $current_bars - $new_bars;
-        
-        # Traslación geométrica exacta
-        my $nuevo_offset = $self->{offset} + ($barras_perdidas * (1 - $porcentaje_pantalla));
-        
-        # --- BLINDAJE MATEMÁTICO DE LÍMITES ---
-        # Evita que el zoom rompa las físicas de la cámara en los extremos vacíos
+    if (defined $mouse_x && defined $self->{price_panel} && defined $self->{price_panel}->{scale}) {
+        my $scale = $self->{price_panel}->{scale};
         my $total_candles = $self->{market_data} ? $self->{market_data}->size() : 0;
-        my $offset_min = -($new_bars - 2);
+        
+        # TradingView ancla el zoom al mouse SIEMPRE cuando el cursor está en el gráfico
+        my $anchor_x = $mouse_x;
+
+        # 1. Obtenemos el índice exacto (decimal) que está bajo el ratón ahora mismo
+        my $exact_index = $scale->x_to_index_float($anchor_x);
+        
+        # 2. Calculamos el nuevo ancho de las velas
+        my $plot_width = $scale->{width} - $scale->{margin_left} - $scale->{margin_right};
+        $plot_width = 1 if $plot_width <= 0;
+        my $new_candle_width = $plot_width / $new_bars;
+        
+        # 3. Matemáticas de traslación inversa:
+        # Despejamos matemáticamente dónde debe iniciar la cámara (offset)
+        # para que el 'exact_index' se mantenga estático en la coordenada 'anchor_x'
+        my $new_scale_offset = $exact_index - (($anchor_x - $scale->{margin_left}) / $new_candle_width);
+        my $nuevo_offset = $total_candles - $new_bars - $new_scale_offset;
+        
+        # 4. BLINDAJE MATEMÁTICO DE LÍMITES
+        # Esto evita que la cámara pase de largo cuando haces zoom en el espacio en blanco
+        # forzando a que las 2 últimas velas se expandan visualmente.
+        my $offset_min = -($new_bars - 2); 
         my $offset_max = $total_candles - 2;
         
         $nuevo_offset = $offset_min if $nuevo_offset < $offset_min;
@@ -534,7 +577,7 @@ sub horizontal_zoom {
         $self->{offset} = $nuevo_offset;
     }
 
-    # Asignamos sin redondear a entero para garantizar fluidez absoluta
+    # Aplicamos sin redondear para mantener la fluidez sub-píxel perfecta
     $self->{visible_bars} = $new_bars;
     $self->request_render();
 }

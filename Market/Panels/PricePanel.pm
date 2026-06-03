@@ -94,7 +94,7 @@ sub render {
     $candle_width = 1 if $candle_width < 1;
 
     my ($start_index, $end_index) = $self->{engine}->compute_window();
-    my $i = $start_index;
+    my $i = int($start_index);
 
     for my $candle (@$data_slice) {
         last if $i > $end_index; 
