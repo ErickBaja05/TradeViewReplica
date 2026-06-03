@@ -139,7 +139,7 @@ sub render {
 sub init_crosshair {
     my ($self) = @_;
     my $crosshair_color = '#a3a6af';
-    my $label_bg_color  = '#fff2cc'; # Amarillo pastel
+    my $label_bg_color  = '#d8b240'; # Amarillo pastel
     my $label_txt_color = '#131722'; # Texto oscuro
 
     # Líneas guía en el canvas principal del ATR
