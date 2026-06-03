@@ -12,7 +12,7 @@ sub new {
         scale  => undef, 
     };
     die "[ERROR ATRPanel]: Objeto Canvas de Tk no recibido.\n" unless $self->{canvas};
-    $self->{canvas}->configure(-bg => '#131722');
+    $self->{canvas}->configure(-bg => '#fbfcf8');
     $self->{canvas}->pack(-side => 'bottom', -fill => 'both', -expand => 0);
     return bless $self, $class;
 }
@@ -24,6 +24,12 @@ sub round {
 
 sub get_y_range {
     my ($self) = @_;
+
+    # NUEVO: ¡Escuchar al motor si estamos en modo manual de Volatilidad!
+    if (defined $self->{engine}->{atr_auto_scale} && $self->{engine}->{atr_auto_scale} == 0) {
+        return ($self->{engine}->{atr_manual_y_min}, $self->{engine}->{atr_manual_y_max});
+    }
+
     my ($start, $end) = $self->{engine}->compute_window();
     my $atr_values = [];
     if (defined $self->{engine}->{indicator_manager}) {
@@ -66,6 +72,7 @@ sub set_scale {
     my ($min_y, $max_y) = $self->get_y_range();
     my $width  = $self->{canvas}->Width();
     my $height = $self->{canvas}->Height();
+    
     my ($start_index, $end_index) = $self->{engine}->compute_window();
     my $visible_bars = $self->{engine}->{visible_bars} || 100;
     my $scale_offset = $end_index - $visible_bars + 1;
@@ -77,14 +84,15 @@ sub set_scale {
         offset       => $scale_offset, 
         y_min        => $min_y,
         y_max        => $max_y,
-        margin_right  => 0,  
-        margin_bottom => 15, # <-- CAMBIAR DE 0 a 15 (Respiro inferior para el texto)
-        margin_left   => 0,
-        margin_top    => 15  # <-- CAMBIAR DE 10 a 15 (Respiro superior para el texto) 
+        
+        # ¡LA MAGIA DE LOS BORDES! Apagamos todos los márgenes para que 
+        # la cuadrícula choque exactamente contra los límites de la pantalla.
+        margin_top   => 0,
+        margin_bottom=> 0,
+        margin_right => 0, 
     );
     return $self->{scale};
 }
-
 sub render {
     my ($self, $data_slice) = @_;
     return unless $data_slice && scalar(@$data_slice) > 0;
@@ -116,7 +124,7 @@ sub render {
             my $y_current = $scale->value_to_y($atr_val);
 
             if (defined $last_x && defined $last_y) {
-                $self->{canvas}->createLine($last_x, $last_y, $x_current, $y_current, -fill => '#2196f3', -width => 2);
+                $self->{canvas}->createLine($last_x, $last_y, $x_current, $y_current, -fill => '#75bbfd', -width => 2);
             }
             $last_x = $x_current;
             $last_y = $y_current;
@@ -130,25 +138,66 @@ sub render {
 
 sub init_crosshair {
     my ($self) = @_;
-    my $crosshair_color = '#555555';
+    my $crosshair_color = '#a3a6af';
+    my $label_bg_color  = '#fff2cc'; # Amarillo pastel
+    my $label_txt_color = '#131722'; # Texto oscuro
 
+    # Líneas guía en el canvas principal del ATR
     $self->{crosshair_v_id} = $self->{canvas}->createLine(0, 0, 0, 0, -fill => $crosshair_color, -dash => '.');
     $self->{crosshair_h_id} = $self->{canvas}->createLine(0, 0, 0, 0, -fill => $crosshair_color, -dash => '.');
+
+    # Etiqueta Y (Volatilidad) renderizada en el canvas del eje derecho del ATR
+    my $axis_cv = $self->{engine}->{atr_axis_canvas};
+    if ($axis_cv) {
+        $self->{crosshair_y_bg} = $axis_cv->createRectangle(0, 0, 0, 0, -fill => $label_bg_color, -outline => $label_bg_color, -state => 'hidden');
+        $self->{crosshair_y_txt} = $axis_cv->createText(0, 0, -fill => $label_txt_color, -font => ['Helvetica', 10, 'bold'], -state => 'hidden');
+    }
 }
 
 sub draw_crosshair {
     my ($self, $x, $y, $is_active) = @_;
+    
     my $canvas_height = $self->{canvas}->Height();
     my $canvas_width  = $self->{canvas}->Width();
+    my $scale         = $self->{scale};
+    my $axis_cv       = $self->{engine}->{atr_axis_canvas};
 
-    return if $canvas_width <= 1 || $canvas_height <= 1;
+    return if $canvas_width <= 1 || $canvas_height <= 1 || !defined $scale;
 
+    # --- Mover línea vertical ---
     if (defined $self->{crosshair_v_id}) {
         $self->{canvas}->coords($self->{crosshair_v_id}, $x, 0, $x, $canvas_height);
     }
-    if (defined $self->{crosshair_h_id}) {
-        if ($is_active) { $self->{canvas}->coords($self->{crosshair_h_id}, 0, $y, $canvas_width, $y); } 
-        else { $self->{canvas}->coords($self->{crosshair_h_id}, 0, 0, 0, 0); }
+    
+    # --- Mover línea horizontal y etiqueta Y del ATR ---
+    if (defined $self->{crosshair_h_id} && $axis_cv) {
+        if ($is_active) { 
+            # 1. Mover la línea punteada
+            $self->{canvas}->coords($self->{crosshair_h_id}, 0, $y, $canvas_width, $y); 
+            
+            # 2. Calcular valor (4 decimales para volatilidad)
+            my $valor_y = $scale->y_to_value($y);
+            my $valor_fmt = sprintf("%.4f", $valor_y);
+
+            # 3. Posicionar texto centrado en el eje lateral (X = 37)
+            $axis_cv->coords($self->{crosshair_y_txt}, 37, $y);
+            $axis_cv->itemconfigure($self->{crosshair_y_txt}, -text => $valor_fmt, -state => 'normal');
+
+            # 4. Envolver el texto con el fondo amarillo pastel
+            my @bbox_y = $axis_cv->bbox($self->{crosshair_y_txt});
+            if (@bbox_y) {
+                $axis_cv->coords($self->{crosshair_y_bg}, $bbox_y[0]-6, $bbox_y[1]-2, $bbox_y[2]+6, $bbox_y[3]+2);
+                $axis_cv->itemconfigure($self->{crosshair_y_bg}, -state => 'normal');
+                $axis_cv->raise($self->{crosshair_y_bg});
+                $axis_cv->raise($self->{crosshair_y_txt});
+            }
+            
+        } else { 
+            # Si el mouse sale del panel, ocultamos todo
+            $self->{canvas}->coords($self->{crosshair_h_id}, 0, 0, 0, 0); 
+            $axis_cv->itemconfigure($self->{crosshair_y_bg}, -state => 'hidden');
+            $axis_cv->itemconfigure($self->{crosshair_y_txt}, -state => 'hidden');
+        }
     }
 }
 
@@ -161,7 +210,7 @@ sub render_last_visible_value {
 
     my $y = $scale->value_to_y($last_atr_val);
     my $canvas_width = $self->{canvas}->Width();
-    my $color = '#2196f3'; 
+    my $color = '#75bbfd'; 
 
     # La línea guía viaja en el main canvas
     $self->{canvas}->createLine(0, $y, $canvas_width, $y, -fill => $color, -dash => '.');

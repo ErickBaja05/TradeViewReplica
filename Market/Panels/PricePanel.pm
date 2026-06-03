@@ -12,7 +12,7 @@ sub new {
         scale  => undef,
     };
     die "[ERROR PricePanel]: Objeto Canvas de Tk no recibido.\n" unless $self->{canvas};
-    $self->{canvas}->configure(-bg => '#131722');
+    $self->{canvas}->configure(-bg => '#fbfcf8');
     $self->{canvas}->pack(-side => 'top', -fill => 'both', -expand => 1);
     return bless $self, $class;
 }
@@ -94,7 +94,7 @@ sub render {
     $candle_width = 1 if $candle_width < 1;
 
     my ($start_index, $end_index) = $self->{engine}->compute_window();
-    my $i = $start_index;
+    my $i = int($start_index);
 
     for my $candle (@$data_slice) {
         last if $i > $end_index; 
@@ -124,9 +124,9 @@ sub render {
 
 sub _init_crosshair_objects {
     my ($self) = @_;
-    my $crosshair_color = '#555555'; 
-    my $label_bg_color  = '#659c39'; 
-    my $label_txt_color = '#ffffff'; 
+    my $crosshair_color = '#a3a6af'; 
+    my $label_bg_color  = '#fff2cc'; 
+    my $label_txt_color = '#131722'; 
 
     # Referencias a los paneles periféricos
     my $time_cv = $self->{engine}->{time_canvas};
@@ -198,8 +198,15 @@ sub draw_crosshair {
         if ($is_active) {
             $self->{canvas}->coords($self->{crosshair_h_id}, 0, $y, $canvas_width, $y);
             
+            # 1. Obtenemos el valor continuo original de la escala de Ricardo
             my $valor_y = $scale->y_to_value($y);
-            my $valor_fmt = sprintf("%.2f", $valor_y);
+            
+            # 2. APLICAMOS EL TICK SIZE (Saltos de 0.25 en 0.25)
+            # Dividimos para el paso, redondeamos con +0.5 y multiplicamos de vuelta.
+            my $valor_discreto = int(($valor_y / 0.25) + 0.5) * 0.25;
+            
+            # 3. Formateamos uniformemente a dos decimales
+            my $valor_fmt = sprintf("%.2f", $valor_discreto);
 
             # Centrado fijo en el eje lateral (37px)
             $axis_cv->coords($self->{crosshair_y_txt}, 37, $y);
@@ -225,12 +232,12 @@ sub draw_time_axis {
     my $etiquetas = $self->{engine}->compute_intraday_labels();
     return unless $etiquetas && scalar(@$etiquetas) > 0;
 
-    # Recuperar el lienzo exclusivo para el tiempo
     my $time_cv = $self->{engine}->{time_canvas};
     return unless $time_cv;
 
     my $scale = $self->{scale};
     my ($start_index, $end_index) = $self->{engine}->compute_window();
+    my $canvas_height = $self->{canvas}->Height();
 
     for my $etiqueta (@$etiquetas) {
         my $pos_relativa = $etiqueta->{indice_relativo} // 0;
@@ -238,24 +245,29 @@ sub draw_time_axis {
         my $x = $scale->index_to_center_x($absolute_index);
         
         my $texto = $etiqueta->{timestamp};
-        my ($hora) = $texto =~ /T(\d{2}:\d{2})/;
+        my ($hora) = $texto =~ /T?(\d{2}:\d{2})/;
         $hora //= $texto; 
 
         my $color_texto = '#787b86';
         my $font_weight = 'normal';
         
         if ($etiqueta->{es_cambio_dia}) {
-            $color_texto = '#d1d4dc';
+            $color_texto = '#000000';
             $font_weight = 'bold';
-            ($hora) = $texto =~ /^(\d{4}-\d{2}-\d{2})/; 
+            
+            # --- ¡AQUÍ ESTÁ LA MAGIA! ---
+            # Extraemos solo el día (los dos últimos dígitos de la fecha YYYY-MM-DD)
+            if ($texto =~ /^\d{4}-\d{2}-(\d{2})/) {
+                $hora = int($1); # int() quita el cero a la izquierda (ej: "05" -> "5")
+            }
+            
         }
         
-        # Se inyecta en la mitad del canvas temporal
         $time_cv->createText(
             $x, 12,
             -text => $hora,
             -fill => $color_texto,
-            -font => ['Helvetica', 9, $font_weight]
+            -font => ['Helvetica', 10, $font_weight]
         );
     }
 }
