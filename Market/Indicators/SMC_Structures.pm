@@ -5,7 +5,7 @@ use warnings;
 sub new {
     my ($class, $liquidity_engine) = @_;
     my $self = {
-        liquidity_engine => $liquidity_engine, # Dependencia del módulo de Domenica
+        liquidity_engine => $liquidity_engine, # Dependencia de otro módulo
         bos_events  => [],
         choch_events => [],
         fvg_zones   => [],
@@ -42,8 +42,8 @@ sub get_latest_anchor_events {
     my ($self) = @_;
     my @events = ();
     
-    # Lógica interna de Josue: si detectó un BOS o CHOCH recientemente, lo empaqueta.
-    # Ejemplo de lo que Josue debe empujar a este array:
+    # Lógica interna: si detectó un BOS o CHOCH recientemente, lo empaqueta.
+    # Ejemplo de lo que se debe empujar a este array:
     # push @events, { type => 'BOS', index => $current_index, price => $break_price };
     # push @events, { type => 'CHOCH', index => $current_index, price => $break_price };
     

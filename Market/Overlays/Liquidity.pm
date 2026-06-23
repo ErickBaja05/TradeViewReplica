@@ -21,7 +21,7 @@ sub new {
 }
 
 # Responsabilidad: Renderizar líneas y etiquetas de Liquidez (BSL, SSL, Sweeps)
-# Inputs: $liquidity_data (proveniente del módulo de Domenica)
+# Inputs: $liquidity_data
 sub render {
     my ($self, $liquidity_data) = @_;
     my $canvas = $self->{canvas};

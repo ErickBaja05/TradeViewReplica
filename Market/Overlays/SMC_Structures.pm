@@ -1,7 +1,7 @@
 package Market::Overlays::SMC_Structures;
 use strict;
 use warnings;
-use parent 'Market::Overlays::Base'; # Requiere que Erick cree la clase Base
+use parent 'Market::Overlays::Base'; 
 
 sub new {
     my ($class, %args) = @_;
@@ -14,7 +14,7 @@ sub new {
 }
 
 # Responsabilidad: Dibujar en el Canvas Tk de forma sincronizada con el Zoom/Scroll
-# Inputs: $canvas, $smc_data (salida de Josue), $scales (transformaciones index_to_x, value_to_y)
+# Inputs: $canvas, $smc_data , $scales (transformaciones index_to_x, value_to_y)
 sub render {
     my ($self, $canvas, $smc_data, $scales) = @_;
     
