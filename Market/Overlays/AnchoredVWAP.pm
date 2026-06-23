@@ -49,7 +49,7 @@ sub reset_anchors {
 # La función principal que se llamará por cada vela
 sub calculate {
     my ($self, $market_data, $current_index) = @_;
-    # ... Lógica de cálculo acumulativo de Domenica ...
+    # ... Lógica de cálculo acumulativo ...
 }
 
 1;

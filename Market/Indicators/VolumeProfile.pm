@@ -29,7 +29,7 @@ sub build_profile {
 sub get_poc_anchor_index {
     my ($self) = @_;
     
-    # Lógica interna de Erick: Buscar en su estructura de perfiles cuál es el POC activo.
+    # Lógica interna: Buscar en su estructura de perfiles cuál es el POC activo.
     my $poc_index = undef; 
     
     # TODO: Asignar a $poc_index el índice de la vela correspondiente al POC actual.
