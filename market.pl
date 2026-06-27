@@ -8,6 +8,7 @@ use Market::MarketData;
 use Market::IndicatorManager;
 use Market::ChartEngine;
 use Market::Indicators::ATR;
+use Market::Indicators::Liquidity;
 
 # =========================================================================
 #   FASES DE EJECUCIÓN CENTRAL (MARKET.PL)
@@ -84,6 +85,36 @@ $control_panel->Button(
     }
 )->pack(-side => 'left', -padx => 10);
 
+# Espaciador
+$control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 5);
+
+# Botón para activar/desactivar el overlay de Liquidez
+my $liq_active = 1;  # estado inicial: visible
+my $liq_btn;
+$liq_btn = $control_panel->Button(
+    -text             => "Liquidez: ON",
+    -bg               => '#ffffff',
+    -fg               => '#26a69a',
+    -activebackground => '#e0e0e0',
+    -activeforeground => '#26a69a',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -command          => sub {
+        return unless $chart_engine;
+        $liq_active = !$liq_active;
+        if ($liq_active) {
+            $liq_btn->configure(-text => "Liquidez: ON",  -fg => '#26a69a');
+        } else {
+            $liq_btn->configure(-text => "Liquidez: OFF", -fg => '#b1b5be');
+            # Limpiar inmediatamente el overlay del canvas
+            $chart_engine->{price_canvas}->delete('liquidity') if $chart_engine->{price_canvas};
+        }
+        # Notificamos al engine el estado actual para que render() lo respete
+        $chart_engine->{liquidity_visible} = $liq_active;
+        $chart_engine->request_render();
+    }
+)->pack(-side => 'left', -padx => 5);
+
 
 # --- ESTRUCTURA MODULAR DE CONTENEDORES PARA EVITAR DEFORMACIÓN ---
 
@@ -131,16 +162,20 @@ my $atr_canvas = $atr_main_row->Canvas(-bg => '#fbfcf8', -highlightthickness => 
 my $market_data       = Market::MarketData->new();       
 my $indicator_manager = Market::IndicatorManager->new(); 
 
+my $liquidity = Market::Indicators::Liquidity->new(k_depth => 3, atr_period => 14);
+$indicator_manager->register('Liquidity', $liquidity);
+
 # Capa 4: Aplicación (Orquestador Central - Inyectamos las nuevas referencias de ejes)
 $chart_engine = Market::ChartEngine->new(
-    market_data       => $market_data,
-    indicator_manager => $indicator_manager,
-    price_canvas      => $price_canvas,
-    price_axis_canvas => $price_axis_canvas, # Inyección del eje vertical de precios
-    time_canvas       => $time_canvas,       # Inyección del eje horizontal de tiempo
-    atr_canvas        => $atr_canvas,
-    atr_axis_canvas   => $atr_axis_canvas,   # Inyección del eje vertical de volatilidad
-    widgets           => { main_window => $mw, scale_btn => $scale_btn }
+    market_data          => $market_data,
+    indicator_manager    => $indicator_manager,
+    price_canvas         => $price_canvas,
+    price_axis_canvas    => $price_axis_canvas, # Inyección del eje vertical de precios
+    time_canvas          => $time_canvas,       # Inyección del eje horizontal de tiempo
+    atr_canvas           => $atr_canvas,
+    atr_axis_canvas      => $atr_axis_canvas,   # Inyección del eje vertical de volatilidad
+    liquidity_indicator  => $liquidity,          # Compartimos la instancia ya registrada
+    widgets              => { main_window => $mw, scale_btn => $scale_btn }
 );
 
 

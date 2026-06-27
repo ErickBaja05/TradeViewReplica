@@ -5,6 +5,8 @@ use warnings;
 
 use Market::Panels::PricePanel;
 use Market::Panels::ATRPanel;
+use Market::Indicators::Liquidity;
+use Market::Overlays::Liquidity;
 
 =head1 NOMBRE
 Market::ChartEngine - Motor gráfico central y orquestador de la interfaz.
@@ -29,8 +31,10 @@ sub new {
         crosshair         => { x => -1, y => -1 },       
         render_pending    => 0,                          
 
-        price_panel       => undef,
-        atr_panel         => undef,
+        price_panel           => undef,
+        atr_panel             => undef,
+        liquidity_indicator   => undef,
+        liquidity_overlay     => undef,
 
         # Estado de Escalas PRECIO
         auto_scale        => 1,      
@@ -54,6 +58,19 @@ sub new {
         canvas => $self->{atr_canvas},
         engine => $self
     );
+
+    # Indicador de Liquidez (Swing Highs / Lows)
+    # Si market.pl lo registró en indicator_manager y también lo pasó como arg,
+    # usamos ese; si no, creamos uno propio.
+    $self->{liquidity_indicator} = $args{liquidity_indicator}
+        // Market::Indicators::Liquidity->new(k_depth => 3, atr_period => 14);
+
+    # Visibilidad del overlay (controlada por el botón en market.pl)
+    $self->{liquidity_visible} = 1;
+
+    # Overlay de Liquidez - se inicializa diferido porque scales no existe aún;
+    # se completa en render() la primera vez que el PricePanel ya tiene escala.
+    $self->{liquidity_overlay} = undef;
 
     return $self;
 }
@@ -117,6 +134,31 @@ sub render {
     
     $self->{price_panel}->render($data_slice) if $self->{price_panel};
     $self->{atr_panel}->render($data_slice)   if $self->{atr_panel};
+
+    # --- OVERLAY DE LIQUIDEZ ---
+    # El PricePanel ya construyó su escala (set_scale se llama dentro de render).
+    # La primera vez creamos el overlay; en renders posteriores solo actualizamos
+    # la referencia a scales (puede cambiar si el canvas se redimensiona).
+    if ($self->{liquidity_visible} && $self->{price_panel} && defined $self->{price_panel}->{scale}) {
+        unless (defined $self->{liquidity_overlay}) {
+            $self->{liquidity_overlay} = Market::Overlays::Liquidity->new(
+                canvas        => $self->{price_canvas},
+                scales        => $self->{price_panel}->{scale},
+                show_resolved => 1,
+                line_width    => 1,
+            );
+        } else {
+            # Actualizar la escala en cada render (puede cambiar con zoom/resize)
+            $self->{liquidity_overlay}->{scales} = $self->{price_panel}->{scale};
+        }
+
+        my ($liq_start, $liq_end) = $self->compute_window();
+        my $liq_zones = $self->{liquidity_indicator}->zones_in_window($liq_start, $liq_end);
+        $self->{liquidity_overlay}->render($liq_zones, $liq_start, $liq_end);
+    } elsif (!$self->{liquidity_visible}) {
+        # Si el usuario desactivó el overlay, asegurarnos de que no queden trazos
+        $self->{price_canvas}->delete('liquidity') if $self->{price_canvas};
+    }
 
     if (defined $self->{crosshair_x} && defined $self->{crosshair_y}) {
         $self->draw_crosshair_all(
