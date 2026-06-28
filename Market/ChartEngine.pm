@@ -41,6 +41,11 @@ sub new {
         atr_auto_scale    => 1,
         atr_manual_y_max  => 10,
         atr_manual_y_min  => 0,
+
+        # Nuevas estructuras para Arquitectura Fase 2
+        overlays        => [],       # Arreglo de instancias de Overlays gráficos
+        replay_timer_id => undef,    # ID del loop de Tk para Play/Pause
+        replay_speed    => 500,      # Milisegundos entre velas durante Play
     };
 
     bless $self, $class;
@@ -117,6 +122,14 @@ sub render {
     
     $self->{price_panel}->render($data_slice) if $self->{price_panel};
     $self->{atr_panel}->render($data_slice)   if $self->{atr_panel};
+
+    # Novedad: Ejecutar renderizado de los overlays gráficos (SMC, Liquidez, etc.)
+    if (defined $self->{price_panel} && defined $self->{price_panel}->{scale}) {
+        my $scale = $self->{price_panel}->{scale};
+        foreach my $overlay (@{$self->{overlays}}) {
+            $overlay->render($start, $end, $scale);
+        }
+    }
 
     if (defined $self->{crosshair_x} && defined $self->{crosshair_y}) {
         $self->draw_crosshair_all(
@@ -657,6 +670,87 @@ sub set_auto_scale {
             -text => $mode ? "Escala: Auto" : "Escala: Manual",
             -fg   => $mode ? '#3bb3e4' : '#ff9800'
         );
+    }
+}
+
+
+# --- 2. NUEVOS MÉTODOS DE GESTIÓN DE OVERLAYS ---
+sub add_overlay {
+    my ($self, $overlay) = @_;
+    push @{$self->{overlays}}, $overlay;
+}
+
+# --- 3. NUEVOS MÉTODOS DE REPLAY QUE SE LLAMAN DESDE MARKET.PL ---
+sub toggle_replay_mode {
+    my ($self, $start_index) = @_;
+    my $md = $self->{market_data};
+    
+    if ($md->is_replay_active()) {
+        $self->pause_replay();
+        $md->set_replay_mode(0);
+    } else {
+        # Por defecto, iniciamos el replay 100 velas atrás si no se especifica
+        $start_index //= ($md->size() > 100) ? $md->size() - 100 : 0;
+        $md->set_replay_mode(1, $start_index);
+    }
+    
+    # Forzamos el offset a 0 para anclarnos a la "vela actual" simulada
+    $self->{offset} = 0;
+    $self->request_render();
+}
+
+sub play_replay {
+    my ($self) = @_;
+    return unless $self->{market_data}->is_replay_active();
+    return if defined $self->{replay_timer_id}; # Evitar múltiples loops
+    
+    my $mw = $self->{widgets}->{main_window};
+    
+    # Callback recursivo para el Play
+    my $step_cb;
+    $step_cb = sub {
+        my $advanced = $self->{market_data}->step_forward();
+        if ($advanced) {
+            $self->request_render();
+            # Notificamos a los indicadores que se actualicen
+            $self->{indicator_manager}->update_last($self->{market_data});
+            
+            # Programamos el siguiente tick
+            $self->{replay_timer_id} = $mw->after($self->{replay_speed}, $step_cb);
+        } else {
+            $self->pause_replay(); # Llegamos al final
+        }
+    };
+    
+    # Iniciamos el primer tick
+    $self->{replay_timer_id} = $mw->after($self->{replay_speed}, $step_cb);
+}
+
+sub pause_replay {
+    my ($self) = @_;
+    if (defined $self->{replay_timer_id}) {
+        my $mw = $self->{widgets}->{main_window};
+        $mw->afterCancel($self->{replay_timer_id});
+        $self->{replay_timer_id} = undef;
+    }
+}
+
+sub step_forward {
+    my ($self) = @_;
+    $self->pause_replay(); # El paso manual pausa la reproducción automática
+    if ($self->{market_data}->step_forward()) {
+        $self->{indicator_manager}->update_last($self->{market_data});
+        $self->request_render();
+    }
+}
+
+sub step_backward {
+    my ($self) = @_;
+    $self->pause_replay();
+    if ($self->{market_data}->step_backward()) {
+        # Al retroceder, idealmente deberías regenerar o usar un snapshot de memoria 
+        # en SMC_Structures, pero renderizar hacia atrás funciona para la vista.
+        $self->request_render();
     }
 }
 
