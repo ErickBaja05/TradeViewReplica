@@ -95,7 +95,7 @@ sub update_state_machine {
     my $tolerance     = $self->calculate_eq_tolerance($atr_value);
 
     foreach my $event (@{$self->{liquidity_events}}) {
-        next if $event->{state} =~ /^(GRAB|RUN|RECLAIMED|ACCEPTANCE)$/;
+        next if $event->{state} =~ /^(SWEEP|GRAB|RUN)$/;
 
         if ($event->{state} eq 'DETECTED') {
             if ($event->{type} eq 'BSL' && $current_candle->{high} >= $event->{price}) {
@@ -117,7 +117,7 @@ sub update_state_machine {
             $event->{bar_count}++;
 
             if ($current_candle->{close} > $event->{price} + $tolerance) {
-                if ($event->{bar_count} <= 2 && $current_candle->{low} <= $event->{price} + $tolerance) {
+                if ($event->{bar_count} <= 3 && $current_candle->{low} <= $event->{price} + $tolerance) {
                     $self->_resolve_event($event, 'GRAB', $current_index);
                 } else {
                     $self->_resolve_event($event, 'RUN', $current_index);
@@ -126,11 +126,11 @@ sub update_state_machine {
             }
 
             if ($current_candle->{low} <= $event->{price} - $tolerance) {
-                $self->_resolve_event($event, 'RECLAIMED', $current_index);
+                $self->_resolve_event($event, 'SWEEP', $current_index);
                 next;
             }
 
-            if ($event->{bar_count} >= 4) {
+            if ($event->{bar_count} >= 3) {
                 $self->_resolve_event($event, 'RUN', $current_index);
             }
         }
@@ -139,7 +139,7 @@ sub update_state_machine {
             $event->{bar_count}++;
 
             if ($current_candle->{close} < $event->{price} - $tolerance) {
-                if ($event->{bar_count} <= 2 && $current_candle->{high} >= $event->{price} - $tolerance) {
+                if ($event->{bar_count} <= 3 && $current_candle->{high} >= $event->{price} - $tolerance) {
                     $self->_resolve_event($event, 'GRAB', $current_index);
                 } else {
                     $self->_resolve_event($event, 'RUN', $current_index);
@@ -148,11 +148,11 @@ sub update_state_machine {
             }
 
             if ($current_candle->{high} >= $event->{price} + $tolerance) {
-                $self->_resolve_event($event, 'RECLAIMED', $current_index);
+                $self->_resolve_event($event, 'SWEEP', $current_index);
                 next;
             }
 
-            if ($event->{bar_count} >= 4) {
+            if ($event->{bar_count} >= 3) {
                 $self->_resolve_event($event, 'RUN', $current_index);
             }
         }
@@ -202,7 +202,7 @@ sub get_values {
 
 sub get_resolved_events {
     my ($self) = @_;
-    my @resolved = grep { $_->{state} =~ /^(GRAB|RUN|RECLAIMED|ACCEPTANCE)$/ } @{$self->{liquidity_events}};
+    my @resolved = grep { $_->{state} =~ /^(SWEEP|GRAB|RUN)$/ } @{$self->{liquidity_events}};
     return \@resolved;
 }
 
