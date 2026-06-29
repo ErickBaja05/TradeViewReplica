@@ -31,15 +31,32 @@ my $tf_label = $control_panel->Label(-text => "Temporalidad:", -bg => '#fbfcf8',
 my @timeframes = ('1m', '5m', '15m', '1h', '2h', '4h', 'D', 'W');
 my $selected_tf = '1m';
 
-my $tf_menu = $control_panel->Optionmenu(
-    -options => \@timeframes,
-    -textvariable => \$selected_tf,
-    -bg => '#ffffff',
-    -fg => '#131722',
-    -command => sub { 
-        if ($chart_engine) {
-            $chart_engine->set_timeframe($selected_tf); 
+# my $tf_menu = $control_panel->Optionmenu(
+#     -options => \@timeframes,
+#     -textvariable => \$selected_tf,
+#     -bg => '#ffffff',
+#     -fg => '#131722',
+#     -command => sub { 
+#         if ($chart_engine) {
+#             $chart_engine->set_timeframe($selected_tf); 
+#             $chart_engine->reset_view();
+#         }
+#     }
+# )->pack(-side => 'left', -padx => 3);
+my $tf_menu = $control_panel->BrowseEntry(
+    -choices      => \@timeframes,
+    -variable     => \$selected_tf,
+    -bg           => '#ffffff',
+    -fg           => '#131722',
+    -state        => 'readonly',
+    -width        => 5,
+    -browsecmd    => sub {
+        my ($widget, $tf) = @_;
+        
+        if (defined $chart_engine) {
+            $chart_engine->set_timeframe($tf); 
             $chart_engine->reset_view();
+            $chart_engine->render();
         }
     }
 )->pack(-side => 'left', -padx => 3);
