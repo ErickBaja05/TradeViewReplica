@@ -1,39 +1,46 @@
 package Market::Overlays::Base;
-
 use strict;
 use warnings;
 
-=head1 NOMBRE
-Market::Overlays::Base - Clase base abstracta para todos los Overlays gráficos.
-=cut
-
+# Constructor base. Todos los overlays heredarán esto.
 sub new {
     my ($class, %args) = @_;
+
     my $self = {
-        engine => $args{engine}, # Referencia al ChartEngine
-        canvas => $args{canvas}, # Referencia al PriceCanvas
-        data   => [],            # Datos internos del overlay
+        canvas => $args{canvas},   # Referencia al widget Tk::Canvas
+        scale  => $args{scale},    # Escala actual, si se desea guardar
+        engine => $args{engine},   # Referencia al ChartEngine
+        colors => $args{colors} || { default => 'black' },
     };
+
     bless $self, $class;
     return $self;
 }
 
-# Método que debe ser llamado en cada paso del Replay para recalcular
-sub update {
-    my ($self, $current_index) = @_;
-    die "El método update() debe ser implementado por la subclase.";
-}
-
-# Método de dibujado que consumirá Doménica
+# Método virtual. Si un overlay hijo no lo implementa, el programa falla.
 sub render {
-    my ($self, $start_index, $end_index, $scale) = @_;
-    die "El método render() debe ser implementado por la subclase.";
+    my ($self, @args) = @_;
+    die "El método render() debe ser implementado por la clase hija " . ref($self);
 }
 
-# Limpieza de elementos del canvas
-sub clear {
-    my ($self, $tag) = @_;
-    $self->{canvas}->delete($tag) if $self->{canvas} && $tag;
+# Utilidad compartida: convertir índice temporal a píxel X
+sub _x_to_pixel {
+    my ($self, $index, $scale) = @_;
+
+    $scale ||= $self->{scale};
+    return undef unless $scale;
+
+    return $scale->index_to_center_x($index);
+}
+
+# Utilidad compartida: convertir precio a píxel Y
+sub _y_to_pixel {
+    my ($self, $value, $scale) = @_;
+
+    $scale ||= $self->{scale};
+    return undef unless $scale;
+
+    return $scale->value_to_y($value);
 }
 
 1;
