@@ -23,6 +23,8 @@ $mw->geometry("${width}x${height}+0+0");
 
 # Declaración adelantada
 my $chart_engine;
+my $liquidity_overlay;
+my $smc_overlay;
 
 # --- BARRA SUPERIOR DE CONTROL DE INTERFAZ ---
 my $control_panel = $mw->Frame(-bg => '#fbfcf8', -relief => 'raised', -bd => 1)
@@ -49,6 +51,45 @@ my $tf_menu = $control_panel->Optionmenu(
             $chart_engine->set_timeframe($selected_tf); 
             $chart_engine->reset_view();
         }
+    }
+)->pack(-side => 'left', -padx => 3);
+
+
+$control_panel->Label(
+    -text => " | Vista:",
+    -bg   => '#fbfcf8',
+    -fg   => '#b1b5be',
+    -font => 'Arial 10 bold'
+)->pack(-side => 'left');
+
+my @vista_opciones = ('Completa', 'Solo Liquidez', 'Solo SMC', 'Limpio');
+my $selected_vista = 'Completa';
+
+$control_panel->Optionmenu(
+    -options      => \@vista_opciones,
+    -textvariable => \$selected_vista,
+    -bg           => '#ffffff',
+    -fg           => '#131722',
+    -command      => sub {
+        # Controlamos las variables booleanas de los overlays de Doménica
+        if ($selected_vista eq 'Completa') {
+            $liquidity_overlay->{active}  = 1;
+            $smc_overlay->{show_fvg}       = 1;
+            $smc_overlay->{show_structure} = 1;
+        } elsif ($selected_vista eq 'Solo Liquidez') {
+            $liquidity_overlay->{active}  = 1;
+            $smc_overlay->{show_fvg}       = 0;
+            $smc_overlay->{show_structure} = 0;
+        } elsif ($selected_vista eq 'Solo SMC') {
+            $liquidity_overlay->{active}  = 0;
+            $smc_overlay->{show_fvg}       = 1;
+            $smc_overlay->{show_structure} = 1;
+        } else {
+            $liquidity_overlay->{active}  = 0;
+            $smc_overlay->{show_fvg}       = 0;
+            $smc_overlay->{show_structure} = 0;
+        }
+        $chart_engine->request_render(); # Forzamos a repintar el canvas
     }
 )->pack(-side => 'left', -padx => 3);
 
@@ -222,12 +263,10 @@ my $smc_real = Market::Indicators::SMC_Structures->new(
     }
 );
 
-# Guardamos SMC dentro del ChartEngine para que Replay pueda actualizarlo.
-$chart_engine->{smc_indicator} = $smc_real;
 
 # --- OVERLAYS VISUALES ---
 # Overlay de Liquidez: dibuja BSL, SSL y etiquetas de la máquina de estados
-my $liquidity_overlay = Market::Overlays::Liquidity->new(
+$liquidity_overlay = Market::Overlays::Liquidity->new(
     canvas => $price_canvas,
     engine => $chart_engine
 );
@@ -236,7 +275,7 @@ $chart_engine->add_overlay($liquidity_overlay);
 # Overlay SMC:
 # Para esta primera entrega se activa FVG + BOS/CHOCH.
 # Se desactivan HH/HL/LH/LL para evitar saturación visual y carga excesiva.
-my $smc_overlay = Market::Overlays::SMC_Structures->new(
+$smc_overlay = Market::Overlays::SMC_Structures->new(
     canvas           => $price_canvas,
     engine           => $chart_engine,
     smc_indicator    => $smc_real,
@@ -250,38 +289,66 @@ my $smc_overlay = Market::Overlays::SMC_Structures->new(
 $chart_engine->add_overlay($smc_overlay);
 
 
-# --- LECTURA DE DATOS ---
-my $archivo_csv = 'datos.csv';
 
+# --- LECTURA DE DATOS OPTIMIZADA PARA LA PRESENTACIÓN ---
+my $archivo_csv = 'datos.csv';
 open(my $fh, '<', $archivo_csv) or die "No se pudo abrir el archivo '$archivo_csv' $!\n";
 
-my $encabezado = <$fh>;
+my @todas_las_lineas = <$fh>;
+close($fh);
 
-while (my $linea = <$fh>) {
+my $limite_velas = 3000; # <--- Esto hace que cargue en 2 segundos en vez de 20 minutos
+my $inicio = scalar(@todas_las_lineas) > $limite_velas ? scalar(@todas_las_lineas) - $limite_velas : 1;
+
+for my $i ($inicio .. $#todas_las_lineas) {
+    my $linea = $todas_las_lineas[$i];
     chomp $linea;
 
     my ($time, $open, $high, $low, $close, $volume) = split(',', $linea);
     
     $market_data->add_candle({
-        time   => $time,
-        open   => 0.0 + $open,
-        high   => 0.0 + $high,
-        low    => 0.0 + $low,
-        close  => 0.0 + $close,
-        volume => 0.0 + $volume
+        time   => $time, open => 0.0 + $open, high => 0.0 + $high,
+        low    => 0.0 + $low, close => 0.0 + $close, volume => 0.0 + $volume
     });
 
-    # Actualización incremental:
-    # ATR y Liquidity necesitan actualizarse vela por vela para generar historial completo.
     $indicator_manager->update_last($market_data);
-
-    # SMC se actualiza después de Liquidity porque consume eventos resueltos de liquidez.
-    # Esto permite que FVG, BOS y CHOCH se vayan generando según avanza el historial.
+    
     my $current_index = $market_data->last_index();
     $smc_real->update($current_index) if defined $current_index && $current_index >= 0;
 }
 
-close($fh);
+# # --- LECTURA DE DATOS ---
+# my $archivo_csv = 'datos.csv';
+
+# open(my $fh, '<', $archivo_csv) or die "No se pudo abrir el archivo '$archivo_csv' $!\n";
+
+# my $encabezado = <$fh>;
+
+# while (my $linea = <$fh>) {
+#     chomp $linea;
+
+#     my ($time, $open, $high, $low, $close, $volume) = split(',', $linea);
+    
+#     $market_data->add_candle({
+#         time   => $time,
+#         open   => 0.0 + $open,
+#         high   => 0.0 + $high,
+#         low    => 0.0 + $low,
+#         close  => 0.0 + $close,
+#         volume => 0.0 + $volume
+#     });
+
+#     # Actualización incremental:
+#     # ATR y Liquidity necesitan actualizarse vela por vela para generar historial completo.
+#     $indicator_manager->update_last($market_data);
+
+#     # SMC se actualiza después de Liquidity porque consume eventos resueltos de liquidez.
+#     # Esto permite que FVG, BOS y CHOCH se vayan generando según avanza el historial.
+#     my $current_index = $market_data->last_index();
+#     $smc_real->update($current_index) if defined $current_index && $current_index >= 0;
+# }
+
+# close($fh);
 
 
 # Inicializamos temporalidades (aquí deberías agregar las lógicas de HTF luego)

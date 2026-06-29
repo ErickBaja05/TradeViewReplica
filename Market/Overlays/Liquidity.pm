@@ -31,6 +31,8 @@ sub render {
     # Limpiar solo la capa de liquidez
     $canvas->delete('liquidity_layer');
 
+    return unless $self->{active} // 1;
+
     # Validar que exista el engine y el manager
     return unless $self->{engine};
     return unless $self->{engine}->{indicator_manager};

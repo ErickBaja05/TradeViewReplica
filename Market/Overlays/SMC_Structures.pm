@@ -392,7 +392,7 @@ sub _draw_label {
     $canvas->createRectangle(
         $x1, $y1,
         $x2, $y2,
-        -fill    => $fade_color,
+        -fill    => $self->{label_bg_color},
         -outline => '',
         -stipple => 'gray50',
         -tags    => ['smc_layer', 'smc_fvg']
