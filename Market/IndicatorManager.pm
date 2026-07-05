@@ -48,6 +48,15 @@ sub get
     return $self->{indicators}{$name}->get_values();
 }
 
+# Devuelve la instancia real del indicador (no solo sus valores),
+# necesario para indicadores como Liquidity que exponen datos adicionales
+# (p. ej. get_equal_levels() para EQH/EQL) que no caben en get_values().
+sub get_indicator_object
+{
+    my ($self, $name) = @_;
+    return $self->{indicators}{$name};
+}
+
 # Devuelve una porción de valores del indicador
 # Sincronización con ventana visible
 sub slice_array

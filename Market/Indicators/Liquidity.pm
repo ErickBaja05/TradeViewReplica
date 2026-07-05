@@ -7,9 +7,15 @@ sub new {
     my $self = {
         atr_period       => $args{atr_period} || 14,
         k_depth          => $args{k_depth} || 3,
+
+        # --- Parámetros de Niveles Iguales (EQH / EQL), portados de Proyecto1BimIA ---
+        eq_tolerance     => $args{eq_tolerance} // 0.10,   # % de ATR admitido como tolerancia
+        eq_lookback      => $args{eq_lookback}  || 20,     # cuántos swings recientes se comparan
+
         swing_highs      => [],
         swing_lows       => [],
         liquidity_events => [],
+        equal_levels     => [],
     };
     bless $self, $class;
     return $self;
@@ -20,6 +26,7 @@ sub reset {
     $self->{swing_highs}      = [];
     $self->{swing_lows}       = [];
     $self->{liquidity_events} = [];
+    $self->{equal_levels}     = [];
 }
 
 sub update_last {
@@ -71,6 +78,10 @@ sub detect_swing_points {
             detected_at => $market_data->get_timestamp($current_index),
             bar_count   => 0,
         };
+
+        # Historial de swing highs para detección de Equal Highs (EQH)
+        push @{$self->{swing_highs}}, { index => $current_index, price => $high };
+        $self->_detect_equal_level('EQH', $self->{swing_highs}, $current_index, $high, $market_data);
     }
 
     if ($is_swing_low && !$self->_contains_event($current_index, 'SSL')) {
@@ -82,6 +93,58 @@ sub detect_swing_points {
             detected_at => $market_data->get_timestamp($current_index),
             bar_count   => 0,
         };
+
+        # Historial de swing lows para detección de Equal Lows (EQL)
+        push @{$self->{swing_lows}}, { index => $current_index, price => $low };
+        $self->_detect_equal_level('EQL', $self->{swing_lows}, $current_index, $low, $market_data);
+    }
+}
+
+# ==========================================================
+# Niveles Iguales (EQH / EQL) — portado de Proyecto1BimIA (Market::Indicators::Liquidity::_detect_equal_levels)
+#
+# Compara el swing recién detectado contra los últimos "eq_lookback" swings del
+# mismo tipo (highs contra highs, lows contra lows). Si la diferencia de precio
+# cae dentro de la tolerancia (ATR * eq_tolerance), se registra un nivel de
+# liquidez EQH/EQL, típico de zonas de acumulación de stops (equal highs/lows).
+# ==========================================================
+sub _detect_equal_level {
+    my ($self, $type, $history, $current_index, $current_price, $market_data) = @_;
+
+    my $atr = $self->compute_atr($market_data);
+    return unless $atr && $atr > 0;
+
+    my $tolerance = $atr * $self->{eq_tolerance};
+    my $lookback  = $self->{eq_lookback} || 20;
+
+    my $count = scalar(@$history);
+    return if $count < 2;
+
+    my $from = $count - 1 - $lookback;
+    $from = 0 if $from < 0;
+
+    # Recorremos del más reciente al más antiguo (sin incluir el swing actual)
+    for my $i (reverse $from .. $count - 2) {
+        my $prev = $history->[$i];
+        next unless $prev;
+
+        my $diff = abs($current_price - $prev->{price});
+
+        if ($diff <= $tolerance) {
+            push @{$self->{equal_levels}}, {
+                type        => $type,
+                state       => 'DETECTED',
+                index1      => $prev->{index},
+                index2      => $current_index,
+                price1      => $prev->{price},
+                price2      => $current_price,
+                price       => ($prev->{price} + $current_price) / 2,
+                tolerance   => $tolerance,
+                source      => $type eq 'EQH' ? 'SwingHigh' : 'SwingLow',
+                detected_at => $market_data->get_timestamp($current_index),
+            };
+            last;
+        }
     }
 }
 
@@ -204,6 +267,12 @@ sub get_resolved_events {
     my ($self) = @_;
     my @resolved = grep { $_->{state} =~ /^(SWEEP|GRAB|RUN)$/ } @{$self->{liquidity_events}};
     return \@resolved;
+}
+
+# Niveles de Equal Highs / Equal Lows detectados (EQH / EQL)
+sub get_equal_levels {
+    my ($self) = @_;
+    return $self->{equal_levels};
 }
 
 sub _contains_event {

@@ -265,10 +265,14 @@ my $smc_real = Market::Indicators::SMC_Structures->new(
 
 
 # --- OVERLAYS VISUALES ---
-# Overlay de Liquidez: dibuja BSL, SSL y etiquetas de la máquina de estados
+# Overlay de Liquidez: dibuja BSL, SSL, etiquetas de la máquina de estados
+# y niveles EQH/EQL (Equal Highs / Equal Lows, portados de Proyecto1BimIA)
 $liquidity_overlay = Market::Overlays::Liquidity->new(
-    canvas => $price_canvas,
-    engine => $chart_engine
+    canvas              => $price_canvas,
+    engine              => $chart_engine,
+    liquidity_indicator => $liquidity_real,
+    show_eqh            => 1,
+    show_eql            => 1,
 );
 $chart_engine->add_overlay($liquidity_overlay);
 
