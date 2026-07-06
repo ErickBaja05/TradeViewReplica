@@ -54,6 +54,7 @@ sub calculate {
 
         my $event;
         my $break_size = 0;
+        my $choch_level; # nivel (pivot previo) roto por un CHoCH, si aplica
 
         my $atr = $pivot->{atr} // 0;
         my $min_break = $atr * $self->{choch_atr_mult};
@@ -89,6 +90,7 @@ sub calculate {
 
                 if ($break_size >= $min_break && !defined $pending_choch) {
                     $event = 'CHoCH_DOWN';
+                    $choch_level = $external_low;
                     $pending_choch = {
                         direction => 'DOWN',
                         pivot     => $pivot,
@@ -120,6 +122,7 @@ sub calculate {
 
                 if ($break_size >= $min_break && !defined $pending_choch) {
                     $event = 'CHoCH_UP';
+                    $choch_level = $external_high;
                     $pending_choch = {
                         direction => 'UP',
                         pivot     => $pivot,
@@ -132,14 +135,24 @@ sub calculate {
         }
 
         if (defined $event) {
-            push @{$self->{events}}, {
+            my %evento = (
                 type        => $event,
                 index       => $pivot->{index},
                 price       => $pivot->{price},
                 pivot       => $label,
                 trend_after => $trend,
                 break_size  => $break_size,
-            };
+            );
+
+            # Para CHoCH guardamos también el nivel (pivote previo) que fue
+            # roto, de modo que la capa visual pueda trazar la línea desde
+            # ese nivel hasta el punto de ruptura, al estilo TradingView.
+            if (defined $choch_level) {
+                $evento{level_index} = $choch_level->{index};
+                $evento{level_price} = $choch_level->{price};
+            }
+
+            push @{$self->{events}}, \%evento;
         }
 
         push @{$self->{structure}}, {

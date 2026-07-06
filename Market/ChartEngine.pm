@@ -7,8 +7,13 @@ use Market::Panels::PricePanel;
 use Market::Panels::ATRPanel;
 use Market::Indicators::Liquidity;
 use Market::Indicators::SMC_Structures;
+use Market::Indicators::FVG;
+use Market::Indicators::OrderBlock;
 use Market::Overlays::Liquidity;
 use Market::Overlays::SMC_Structures;
+use Market::Overlays::ChoCH;
+use Market::Overlays::FVG;
+use Market::Overlays::OrderBlock;
 
 =head1 NOMBRE
 Market::ChartEngine - Motor gráfico central y orquestador de la interfaz.
@@ -49,6 +54,9 @@ sub new {
         # --- Funcionalidad de Liquidez y SMC (Smart Money Concepts) ---
         show_liquidity    => 1,
         show_smc          => 1,
+        show_choch        => 1,
+        show_fvg          => 1,
+        show_ob           => 1,
         smc_cache_key     => undef,
 
         liquidity_engine  => Market::Indicators::Liquidity->new(
@@ -59,8 +67,18 @@ sub new {
         smc_engine        => Market::Indicators::SMC_Structures->new(
             choch_atr_mult => 2.0,
         ),
+        fvg_engine        => Market::Indicators::FVG->new(
+            min_gap_atr_mult => 0.05,
+        ),
+        ob_engine         => Market::Indicators::OrderBlock->new(
+            impulse_atr_mult => 1.5,
+            max_lookback      => 15,
+        ),
         liquidity_overlay => Market::Overlays::Liquidity->new(),
         smc_overlay       => Market::Overlays::SMC_Structures->new(),
+        choch_overlay     => Market::Overlays::ChoCH->new(),
+        fvg_overlay       => Market::Overlays::FVG->new(),
+        ob_overlay        => Market::Overlays::OrderBlock->new(),
     };
 
     bless $self, $class;
@@ -138,20 +156,31 @@ sub render {
     $self->{price_panel}->render($data_slice) if $self->{price_panel};
     $self->{atr_panel}->render($data_slice)   if $self->{atr_panel};
 
-    # --- Capas de Liquidez y SMC (Smart Money Concepts) ---
+    # --- Capas de Liquidez, SMC, ChoCH, FVG y Order Blocks ---
     # Se dibujan sobre el canvas de precios, apoyándose en la misma escala
     # ($self->{price_panel}->{scale}) que ya fue calculada por PricePanel::render().
-    if ($self->{show_liquidity} || $self->{show_smc}) {
+    if ($self->{show_liquidity} || $self->{show_smc} || $self->{show_choch} || $self->{show_fvg} || $self->{show_ob}) {
         $self->update_smc_overlay($self->{market_data}->last_index());
 
         my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
 
         if ($scale) {
-            $self->{smc_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
-                if $self->{show_smc};
+            # Las franjas (FVG/OB) se dibujan primero, para que las líneas de
+            # estructura (SMC/CHoCH/Liquidez) queden siempre visibles por encima.
+            $self->{fvg_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_fvg};
+
+            $self->{ob_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_ob};
 
             $self->{liquidity_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
                 if $self->{show_liquidity};
+
+            $self->{smc_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_smc};
+
+            $self->{choch_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_choch};
         }
     }
 
@@ -197,8 +226,25 @@ sub update_smc_overlay {
         $liq_result->{structural_pivots}
     );
 
+    my $candles_full = $market_data->get_slice(0, $until_index);
+
+    my $fvg_result = $self->{fvg_engine}->calculate_until(
+        $candles_full,
+        $atr_values,
+        $until_index
+    );
+
+    my $ob_result = $self->{ob_engine}->calculate_until(
+        $candles_full,
+        $atr_values,
+        $until_index
+    );
+
     $self->{liquidity_overlay}->set_result($liq_result);
     $self->{smc_overlay}->set_result($smc_result);
+    $self->{choch_overlay}->set_result($smc_result);
+    $self->{fvg_overlay}->set_result($fvg_result);
+    $self->{ob_overlay}->set_result($ob_result);
     $self->{smc_cache_key} = $cache_key;
 }
 

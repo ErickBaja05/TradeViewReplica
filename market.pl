@@ -25,25 +25,31 @@ $mw->geometry("${width}x${height}+0+0");
 my $control_panel = $mw->Frame(-bg => '#fbfcf8', -relief => 'raised', -bd => 1)
                        ->pack(-side => 'top', -fill => 'x', -ipady => 4);
 
-# Control de Temporalidades (Requerimiento Avanzado del documento: 1m, 5m, 15m)
+# Control de Temporalidades (1m, 5m, 15m, 1h, 2h, 4h, 1d) mediante un menú
+# desplegable único, en lugar de un botón por cada temporalidad.
 my $tf_label = $control_panel->Label(-text => "Temporalidad:", -bg => '#fbfcf8', -fg => '#b1b5be', -font => 'Arial 10 bold')
                              ->pack(-side => 'left', -padx => 10);
 
-# Declaración adelantada de la referencia del motor para usar en los callbacks de los botones
+# Declaración adelantada de la referencia del motor para usar en los callbacks
 my $chart_engine;
 
-for my $tf ('1m', '5m', '15m') {
-    $control_panel->Button(
-        -text             => $tf,
-        -bg               => '#ffffff',
-        -fg               => '#131722',
-        -activebackground => '#75bbfd',
-        -activeforeground => 'white',
-        -relief           => 'flat',
-        -cursor           => 'hand2',
-        -command          => sub { $chart_engine->set_timeframe($tf) if $chart_engine; }
-    )->pack(-side => 'left', -padx => 3);
-}
+my @temporalidades = ('1m', '5m', '15m', '1h', '2h', '4h', '1d');
+my $tf_seleccionada = '1m';
+
+my $tf_menu = $control_panel->Optionmenu(
+    -options          => [ map { [$_, $_] } @temporalidades ],
+    -variable         => \$tf_seleccionada,
+    -bg               => '#ffffff',
+    -fg               => '#131722',
+    -activebackground => '#75bbfd',
+    -activeforeground => 'white',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -command          => sub {
+        my ($valor) = @_;
+        $chart_engine->set_timeframe($valor) if $chart_engine && defined $valor;
+    },
+)->pack(-side => 'left', -padx => 3);
 
 # Espaciador estético intermedio
 $control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
@@ -87,6 +93,69 @@ $smc_btn = $control_panel->Button(
         $smc_btn->configure(
             -text => $nuevo_estado ? "SMC: ON" : "SMC: OFF",
             -fg   => $nuevo_estado ? '#2962ff' : '#b1b5be'
+        );
+        $chart_engine->request_render();
+    }
+)->pack(-side => 'left', -padx => 5);
+
+my $choch_btn;
+$choch_btn = $control_panel->Button(
+    -text             => "ChoCH: ON",
+    -bg               => '#ffffff',
+    -fg               => '#ff9800',
+    -activebackground => '#e0e0e0',
+    -activeforeground => '#ff9800',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -command          => sub {
+        return unless $chart_engine;
+        my $nuevo_estado = $chart_engine->{show_choch} ? 0 : 1;
+        $chart_engine->{show_choch} = $nuevo_estado;
+        $choch_btn->configure(
+            -text => $nuevo_estado ? "ChoCH: ON" : "ChoCH: OFF",
+            -fg   => $nuevo_estado ? '#ff9800' : '#b1b5be'
+        );
+        $chart_engine->request_render();
+    }
+)->pack(-side => 'left', -padx => 5);
+
+my $fvg_btn;
+$fvg_btn = $control_panel->Button(
+    -text             => "FVG: ON",
+    -bg               => '#ffffff',
+    -fg               => '#8e24aa',
+    -activebackground => '#e0e0e0',
+    -activeforeground => '#8e24aa',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -command          => sub {
+        return unless $chart_engine;
+        my $nuevo_estado = $chart_engine->{show_fvg} ? 0 : 1;
+        $chart_engine->{show_fvg} = $nuevo_estado;
+        $fvg_btn->configure(
+            -text => $nuevo_estado ? "FVG: ON" : "FVG: OFF",
+            -fg   => $nuevo_estado ? '#8e24aa' : '#b1b5be'
+        );
+        $chart_engine->request_render();
+    }
+)->pack(-side => 'left', -padx => 5);
+
+my $ob_btn;
+$ob_btn = $control_panel->Button(
+    -text             => "OB: ON",
+    -bg               => '#ffffff',
+    -fg               => '#6d4c41',
+    -activebackground => '#e0e0e0',
+    -activeforeground => '#6d4c41',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -command          => sub {
+        return unless $chart_engine;
+        my $nuevo_estado = $chart_engine->{show_ob} ? 0 : 1;
+        $chart_engine->{show_ob} = $nuevo_estado;
+        $ob_btn->configure(
+            -text => $nuevo_estado ? "OB: ON" : "OB: OFF",
+            -fg   => $nuevo_estado ? '#6d4c41' : '#b1b5be'
         );
         $chart_engine->request_render();
     }
