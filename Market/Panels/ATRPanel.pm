@@ -3,6 +3,7 @@ package Market::Panels::ATRPanel;
 use strict;
 use warnings;
 use Market::Panels::Scales;
+use Scalar::Util qw(blessed);
 
 sub new {
     my ($class, %args) = @_;
@@ -31,15 +32,25 @@ sub get_y_range {
     }
 
     my ($start, $end) = $self->{engine}->compute_window();
+
     my $atr_values = [];
+    my $atr_indicator;
+
     if (defined $self->{engine}->{indicator_manager}) {
-        my $atr_indicator = $self->{engine}->{indicator_manager}->get('ATR');
-        if (defined $atr_indicator) {
-            if (ref($atr_indicator) eq 'ARRAY') {
-                $atr_values = $atr_indicator;
-            } elsif (ref($atr_indicator) eq 'HASH') {
-                $atr_values = $atr_indicator->{values} || [];
-            }
+        my $im = $self->{engine}->{indicator_manager};
+
+        if (blessed($im) && $im->can('get_atr')) {
+            $atr_indicator = $im->get_atr();
+        }
+        elsif (blessed($im) && $im->can('get')) {
+            $atr_indicator = $im->get('ATR');
+        }
+        elsif (ref($im) eq 'HASH' && exists $im->{atr}) {
+            $atr_indicator = $im->{atr};
+        }
+
+        if (defined $atr_indicator && blessed($atr_indicator) && $atr_indicator->can('get_values')) {
+            $atr_values = $atr_indicator->get_values();
         }
     }
     
