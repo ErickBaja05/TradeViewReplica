@@ -5,6 +5,10 @@ use warnings;
 
 use Market::Panels::PricePanel;
 use Market::Panels::ATRPanel;
+use Market::Indicators::Liquidity;
+use Market::Indicators::SMC_Structures;
+use Market::Overlays::Liquidity;
+use Market::Overlays::SMC_Structures;
 
 =head1 NOMBRE
 Market::ChartEngine - Motor gráfico central y orquestador de la interfaz.
@@ -41,6 +45,22 @@ sub new {
         atr_auto_scale    => 1,
         atr_manual_y_max  => 10,
         atr_manual_y_min  => 0,
+
+        # --- Funcionalidad de Liquidez y SMC (Smart Money Concepts) ---
+        show_liquidity    => 1,
+        show_smc          => 1,
+        smc_cache_key     => undef,
+
+        liquidity_engine  => Market::Indicators::Liquidity->new(
+            atr_mult       => 4.0,
+            minor_atr_mult => 1.5,
+            confirm_bars   => 3,
+        ),
+        smc_engine        => Market::Indicators::SMC_Structures->new(
+            choch_atr_mult => 2.0,
+        ),
+        liquidity_overlay => Market::Overlays::Liquidity->new(),
+        smc_overlay       => Market::Overlays::SMC_Structures->new(),
     };
 
     bless $self, $class;
@@ -118,6 +138,23 @@ sub render {
     $self->{price_panel}->render($data_slice) if $self->{price_panel};
     $self->{atr_panel}->render($data_slice)   if $self->{atr_panel};
 
+    # --- Capas de Liquidez y SMC (Smart Money Concepts) ---
+    # Se dibujan sobre el canvas de precios, apoyándose en la misma escala
+    # ($self->{price_panel}->{scale}) que ya fue calculada por PricePanel::render().
+    if ($self->{show_liquidity} || $self->{show_smc}) {
+        $self->update_smc_overlay($self->{market_data}->last_index());
+
+        my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
+
+        if ($scale) {
+            $self->{smc_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_smc};
+
+            $self->{liquidity_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_liquidity};
+        }
+    }
+
     if (defined $self->{crosshair_x} && defined $self->{crosshair_y}) {
         $self->draw_crosshair_all(
             $self->{crosshair_x}, 
@@ -125,6 +162,44 @@ sub render {
             $self->{crosshair_w}
         );
     }
+}
+
+=head2 update_smc_overlay($until_index)
+
+Calcula (con caché) los resultados de Liquidez y de Estructura SMC hasta el
+índice indicado, y actualiza las capas visuales correspondientes. El caché
+evita recalcular ambos motores en cada render (por ejemplo al mover el
+crosshair), recalculando sólo cuando cambia la temporalidad activa o el
+índice de la última vela disponible.
+
+=cut
+
+sub update_smc_overlay {
+    my ($self, $until_index) = @_;
+    return unless defined $until_index && $until_index >= 0;
+
+    my $market_data = $self->{market_data};
+    my $tf = $market_data->{timeframe} // '1m';
+
+    my $cache_key = join(':', $tf, $until_index);
+    return if defined $self->{smc_cache_key} && $self->{smc_cache_key} eq $cache_key;
+
+    my $atr_values = $self->{indicator_manager} ? $self->{indicator_manager}->get('ATR') : undef;
+    return unless $atr_values;
+
+    my $liq_result = $self->{liquidity_engine}->calculate_until(
+        $market_data->get_slice(0, $until_index),
+        $atr_values,
+        $until_index
+    );
+
+    my $smc_result = $self->{smc_engine}->calculate(
+        $liq_result->{structural_pivots}
+    );
+
+    $self->{liquidity_overlay}->set_result($liq_result);
+    $self->{smc_overlay}->set_result($smc_result);
+    $self->{smc_cache_key} = $cache_key;
 }
 
 sub bind_all_canvas {
@@ -494,6 +569,20 @@ sub vertical_zoom {
 sub set_timeframe {
     my ($self, $tf) = @_;
     $self->{market_data}->set_timeframe($tf) if $self->{market_data} && $self->{market_data}->can('set_timeframe');
+
+    # El ATR incremental sólo conoce la última vela agregada; al cambiar de
+    # temporalidad hace falta recalcular la serie completa para que la nueva
+    # cantidad de velas quede correctamente indexada. Esto es indispensable
+    # para que Liquidez y SMC (que dependen del ATR por índice) sigan siendo
+    # coherentes en 1m/5m/15m.
+    if ($self->{indicator_manager} && $self->{indicator_manager}->can('recompute_all')) {
+        $self->{indicator_manager}->recompute_all($self->{market_data});
+    }
+
+    # Invalidamos el caché de Liquidez/SMC para forzar su recálculo con la
+    # nueva serie de velas y de ATR.
+    $self->{smc_cache_key} = undef;
+
     $self->reset_view(); 
 }
 

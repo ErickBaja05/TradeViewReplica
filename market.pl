@@ -48,6 +48,53 @@ for my $tf ('1m', '5m', '15m') {
 # Espaciador estético intermedio
 $control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
 
+# --- CONTROLES DE LIQUIDEZ Y SMC (Smart Money Concepts) ---
+# Botones tipo "toggle" para mostrar/ocultar cada capa de análisis de forma independiente.
+my $liquidity_btn;
+$liquidity_btn = $control_panel->Button(
+    -text             => "Liquidez: ON",
+    -bg               => '#ffffff',
+    -fg               => '#089981',
+    -activebackground => '#e0e0e0',
+    -activeforeground => '#089981',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -command          => sub {
+        return unless $chart_engine;
+        my $nuevo_estado = $chart_engine->{show_liquidity} ? 0 : 1;
+        $chart_engine->{show_liquidity} = $nuevo_estado;
+        $liquidity_btn->configure(
+            -text => $nuevo_estado ? "Liquidez: ON" : "Liquidez: OFF",
+            -fg   => $nuevo_estado ? '#089981' : '#b1b5be'
+        );
+        $chart_engine->request_render();
+    }
+)->pack(-side => 'left', -padx => 5);
+
+my $smc_btn;
+$smc_btn = $control_panel->Button(
+    -text             => "SMC: ON",
+    -bg               => '#ffffff',
+    -fg               => '#2962ff',
+    -activebackground => '#e0e0e0',
+    -activeforeground => '#2962ff',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -command          => sub {
+        return unless $chart_engine;
+        my $nuevo_estado = $chart_engine->{show_smc} ? 0 : 1;
+        $chart_engine->{show_smc} = $nuevo_estado;
+        $smc_btn->configure(
+            -text => $nuevo_estado ? "SMC: ON" : "SMC: OFF",
+            -fg   => $nuevo_estado ? '#2962ff' : '#b1b5be'
+        );
+        $chart_engine->request_render();
+    }
+)->pack(-side => 'left', -padx => 5);
+
+# Espaciador estético intermedio
+$control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
+
 # Botón dinámico para conmutar el Modo de Escala (Auto / Manual)
 my $scale_btn;
 $scale_btn = $control_panel->Button(

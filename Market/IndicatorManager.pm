@@ -75,4 +75,21 @@ sub reset_all
         $self->{indicators}{$name}->reset();
     }
 }
+
+# Recalcula por completo aquellos indicadores que soporten recompute_all()
+# (por ejemplo ATR), usando el historial completo de $market_data bajo la
+# temporalidad activa. Necesario tras un cambio de timeframe para que los
+# indicadores derivados (Liquidez, SMC) reciban una serie coherente.
+sub recompute_all
+{
+    my ($self, $market_data) = @_;
+    for my $name (keys %{$self->{indicators}})
+    {
+        my $indicator = $self->{indicators}{$name};
+        if ($indicator->can('recompute_all'))
+        {
+            $indicator->recompute_all($market_data);
+        }
+    }
+}
 1;
