@@ -2,6 +2,7 @@ package Market::MarketData;
 
 use strict;
 use warnings;
+use Time::Local qw(timelocal);
 
 sub new {
    my ($class) = @_;
@@ -9,12 +10,11 @@ sub new {
    my $self = {
       timeframe => '1m',
       data => {
-         '1m'  => [], '5m'  => [], '15m' => [], '1h' => [], 
+         '1m'  => [], '5m'  => [], '15m' => [], '1h' => [],
          '2h'  => [], '4h'  => [], 'D'   => [], 'W'  => []
       },
       candles => [],
-      
-      # VARIABLES DEL SISTEMA REPLAY
+
       replay_mode  => 0,
       replay_index => 0,
    };
@@ -22,40 +22,111 @@ sub new {
    return $self;
 }
 
-# --- CONTROLES DE REPLAY ---
+# ==========================================================
+# Utilidades de tiempo: todas las temporalidades se agrupan
+# por epoch, como en el proyecto guía. Esto evita que al
+# cambiar de temporalidad queden velas mal agrupadas.
+# ==========================================================
+sub _parse_time_to_epoch {
+   my ($time_str) = @_;
+   return undef unless defined $time_str;
 
+   # Acepta: 2026-04-30T22:38:00, 2026-04-30 22:38:00,
+   # con o sin milisegundos y con o sin zona horaria final.
+   my $clean = $time_str;
+   $clean =~ s/\.\d+//;
+   $clean =~ s/Z$//;
+   $clean =~ s/[-+]\d{2}:?\d{2}$//;
+
+   if ($clean =~ /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/) {
+      my ($y, $mo, $d, $h, $m, $s) = ($1, $2, $3, $4, $5, $6 // 0);
+      return timelocal($s, $m, $h, $d, $mo - 1, $y);
+   }
+   return undef;
+}
+
+sub _epoch_to_time_str {
+   my ($epoch) = @_;
+   my @lt = localtime($epoch);
+   return sprintf('%04d-%02d-%02dT%02d:%02d:%02d',
+      $lt[5] + 1900, $lt[4] + 1, $lt[3], $lt[2], $lt[1], $lt[0]
+   );
+}
+
+sub _tf_seconds {
+   my ($tf) = @_;
+   return 60       if $tf eq '1m';
+   return 5 * 60   if $tf eq '5m';
+   return 15 * 60  if $tf eq '15m';
+   return 60 * 60  if $tf eq '1h';
+   return 2 * 3600 if $tf eq '2h';
+   return 4 * 3600 if $tf eq '4h';
+   return undef;
+}
+
+sub _bucket_epoch {
+   my ($epoch, $tf) = @_;
+   return undef unless defined $epoch;
+
+   if (my $seconds = _tf_seconds($tf)) {
+      return int($epoch / $seconds) * $seconds;
+   }
+
+   my @lt = localtime($epoch);
+
+   if ($tf eq 'D') {
+      return timelocal(0, 0, 0, $lt[3], $lt[4], $lt[5] + 1900);
+   }
+
+   if ($tf eq 'W') {
+      my $midnight = timelocal(0, 0, 0, $lt[3], $lt[4], $lt[5] + 1900);
+      my $wday = $lt[6];                 # 0 domingo, 1 lunes, ..., 6 sábado
+      my $days_back = $wday == 0 ? 6 : $wday - 1;
+      return $midnight - ($days_back * 24 * 60 * 60);
+   }
+
+   return undef;
+}
+
+sub _supported_timeframe {
+   my ($self, $tf) = @_;
+   return defined $tf && exists $self->{data}{$tf};
+}
+
+# ==========================================================
+# Controles de replay
+# ==========================================================
 sub set_replay_mode {
     my ($self, $state, $start_index) = @_;
-    $self->{replay_mode} = $state;
-    if ($state) {
-        $self->{replay_index} = defined $start_index ? $start_index : 0;
+    $self->{replay_mode} = $state ? 1 : 0;
+
+    my $array_ref = $self->{data}{ $self->{timeframe} } // [];
+    my $max_idx = scalar(@$array_ref) - 1;
+    $max_idx = 0 if $max_idx < 0;
+
+    if ($self->{replay_mode}) {
+        $start_index = 0 unless defined $start_index;
+        $start_index = 0 if $start_index < 0;
+        $start_index = $max_idx if $start_index > $max_idx;
+        $self->{replay_index} = $start_index;
     } else {
-        # Si apagamos el replay, el índice salta al final de los datos reales
-        my $array_ref = $self->{data}->{$self->{timeframe}} // [];
-        $self->{replay_index} = scalar(@$array_ref) - 1;
+        $self->{replay_index} = $max_idx;
     }
 }
 
-sub is_replay_active {
-    my ($self) = @_;
-    return $self->{replay_mode};
-}
-
-sub get_replay_index {
-    my ($self) = @_;
-    return $self->{replay_index};
-}
+sub is_replay_active { return $_[0]->{replay_mode}; }
+sub get_replay_index { return $_[0]->{replay_index}; }
 
 sub step_forward {
     my ($self) = @_;
     return unless $self->{replay_mode};
-    my $array_ref = $self->{data}->{$self->{timeframe}} // [];
+    my $array_ref = $self->{data}{ $self->{timeframe} } // [];
     my $max_idx = scalar(@$array_ref) - 1;
     if ($self->{replay_index} < $max_idx) {
         $self->{replay_index}++;
-        return 1; # Retorna 1 si avanzó
+        return 1;
     }
-    return 0; # Final de los datos
+    return 0;
 }
 
 sub step_backward {
@@ -68,26 +139,29 @@ sub step_backward {
     return 0;
 }
 
-# --- ACCESO A DATOS (BLINDADOS POR EL REPLAY) ---
-
+# ==========================================================
+# Acceso a datos
+# ==========================================================
 sub _active_array {
    my ($self) = @_;
    my $tf = $self->{timeframe} // '1m';
-   $self->{data}->{$tf} //= [];
+   $self->{data}{$tf} //= [];
 
-   if ($tf eq '1m' && scalar @{$self->{data}->{'1m'}} == 0 && scalar @{$self->{candles}} > 0) {
-      $self->{data}->{'1m'} = $self->{candles};
+   if ($tf eq '1m' && scalar(@{$self->{data}{'1m'}}) == 0 && scalar(@{$self->{candles}}) > 0) {
+      $self->{data}{'1m'} = $self->{candles};
    }
-   return $self->{data}->{$tf};
+   return $self->{data}{$tf};
 }
 
 sub get_data {
    my ($self) = @_;
    my $array_ref = $self->_active_array();
-   
-   # Si estamos en replay, devolvemos solo hasta el índice actual
+
    if ($self->{replay_mode}) {
-       my @sliced = @{$array_ref}[0 .. $self->{replay_index}];
+       my $last = $self->{replay_index};
+       $last = scalar(@$array_ref) - 1 if $last > scalar(@$array_ref) - 1;
+       return [] if $last < 0;
+       my @sliced = @{$array_ref}[0 .. $last];
        return \@sliced;
    }
    return $array_ref;
@@ -96,26 +170,23 @@ sub get_data {
 sub size {
    my ($self) = @_;
    my $array_ref = $self->_active_array();
-   my $total = scalar @{$array_ref};
-   
+   my $total = scalar(@$array_ref);
+   return 0 if $total <= 0;
+
    if ($self->{replay_mode}) {
-       return ($self->{replay_index} + 1 > $total) ? $total : $self->{replay_index} + 1;
+       my $visible = $self->{replay_index} + 1;
+       $visible = $total if $visible > $total;
+       return $visible;
    }
    return $total;
 }
 
-sub last_index {
-   my ($self) = @_;
-   return $self->size() - 1;
-}
+sub last_index { return $_[0]->size() - 1; }
 
 sub get_candle {
    my ($self, $index) = @_;
-   if (defined $index && $index >= 0 && $index <= $self->last_index()) {
-      my $array_ref = $self->_active_array();
-      return $array_ref->[$index];
-   }
-   return undef;
+   return undef unless defined $index && $index >= 0 && $index <= $self->last_index();
+   return $self->_active_array()->[$index];
 }
 
 sub last_candle {
@@ -126,80 +197,74 @@ sub last_candle {
 
 sub get_slice {
    my ($self, $start, $end) = @_;
-   my $max_idx = $self->last_index(); # Blindado por Replay
-   
-   return [] if $max_idx < 0; 
+   my $max_idx = $self->last_index();
+   return [] if $max_idx < 0;
+
    $start = 0 if !defined $start || $start < 0;
    $end = $max_idx if !defined $end || $end > $max_idx;
-   
    return [] if $start > $end;
-   
+
    my $array_ref = $self->_active_array();
    my @slice = @{$array_ref}[$start .. $end];
-   
    return \@slice;
 }
 
 sub get_timestamp {
    my ($self, $index) = @_;
    my $candle = $self->get_candle($index);
-   if (defined $candle && exists $candle->{time}) {
-      return $candle->{time};
-   }
-   return undef;
+   return defined $candle ? $candle->{time} : undef;
 }
-
-
-
-
-=head2 compute_time_anchors()
-
-Analiza el arreglo de velas activas y calcula puntos estratégicos (anclajes) en la línea de tiempo. 
-
-=cut
 
 sub compute_time_anchors {
    my ($self) = @_;
    my $active_array = $self->_active_array();
    my @raw_anchors;
-   
+   my $prev_day = '';
+
    for my $i (0 .. $#$active_array) {
       my $time_str = $active_array->[$i]->{time};
-      
-      if (defined $time_str && $time_str =~ /T(\d{2}):(\d{2})/) {
-         my $hh = $1;
-         my $mm = $2;
-         
-         push @raw_anchors, {
-            index  => $i,
-            label  => "$hh:$mm",
-            minute => int($mm)
-         };
+      next unless defined $time_str;
+
+      if ($time_str =~ /^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})/) {
+         my ($date, $hh, $mm) = ($1, $2, $3);
+         if ($date ne $prev_day || $mm =~ /^(00|15|30|45)$/) {
+            push @raw_anchors, {
+               index   => $i,
+               label   => "$hh:$mm",
+               date    => $date,
+               hour    => "$hh:$mm",
+               minute  => int($mm),
+               new_day => ($date ne $prev_day) ? 1 : 0,
+            };
+            $prev_day = $date;
+         }
       }
    }
    return \@raw_anchors;
 }
 
-
-
-=head2 add_candle()
-
-Este método recibe un hash de una vela y lo agrega al arreglo dinámico.
-
-=cut
-
+# ==========================================================
+# Carga y construcción de temporalidades
+# ==========================================================
 sub add_candle {
    my ($self, $candle) = @_;
-   
+
    if (defined $candle && ref($candle) eq 'HASH') {
-      if ( exists $candle->{time}   &&
-            exists $candle->{open}   &&
-            exists $candle->{high}   &&
-            exists $candle->{low}    &&
-            exists $candle->{close}  &&
-            exists $candle->{volume} ) {
-            
-            push @{$self->{candles}}, $candle;
+      if (exists $candle->{time} && exists $candle->{open} && exists $candle->{high}
+          && exists $candle->{low} && exists $candle->{close} && exists $candle->{volume}) {
+
+         my $epoch = exists $candle->{epoch} ? $candle->{epoch} : _parse_time_to_epoch($candle->{time});
+         my $normalized = {
+            time   => $candle->{time},
+            epoch  => $epoch,
+            open   => 0.0 + $candle->{open},
+            high   => 0.0 + $candle->{high},
+            low    => 0.0 + $candle->{low},
+            close  => 0.0 + $candle->{close},
+            volume => 0.0 + $candle->{volume},
+         };
+         push @{$self->{candles}}, $normalized;
+         $self->{data}{'1m'} = $self->{candles};
       } else {
          warn "[MarketData Error] Intento de agregar una vela con campos incompletos.\n";
       }
@@ -209,175 +274,108 @@ sub add_candle {
    return $self;
 }
 
-
-
-=head2 build_tf_candles()
-
-Subrutina encargada de comprimir n velas de 1 minuto en una sola vela de mayor temporalidad, 
-alineando matemáticamente el reloj (ej. 00, 15, 30, 45, o inicios de hora/día/semana).
-
-=cut
-
 sub build_tf_candles {
    my ($self, $tf) = @_;
+   return $self->{data}{'1m'} if $tf eq '1m';
+   return [] unless $self->_supported_timeframe($tf);
 
-   my $candles_1m = $self->{candles};
-   $self->{data}->{$tf} = [];
+   my $candles_1m = $self->{candles} || [];
+   my @out;
+   return \@out if scalar(@$candles_1m) == 0;
 
-   return if scalar(@{$candles_1m}) == 0;
+   my $current;
+   my $current_bucket;
 
-   my $current_bucket_time = undef;
-   my $current_candle = undef;
+   for my $c (@$candles_1m) {
+      next unless $c && ref($c) eq 'HASH';
+      my $epoch = exists $c->{epoch} && defined $c->{epoch} ? $c->{epoch} : _parse_time_to_epoch($c->{time});
+      next unless defined $epoch;
 
-   # Recorremos la línea temporal secuencialmente analizando el reloj de cada vela
-   for my $candle (@{$candles_1m}) {
-      my $time_str = $candle->{time};
-      my $bucket_time_str = "";
-      
-      # Nueva Expresión Regular para desglosar todo: Año, Mes, Día, Hora, Minutos
-      if ($time_str =~ /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(.*)$/) {
-         my $yyyy = $1;
-         my $mo   = $2;
-         my $dd   = $3;
-         my $hh   = int($4);
-         my $min  = int($5);
-         my $suffix = $6 || ":00";
-         
-         # 1. Temporalidades Intradía (Minutos)
-         if ($tf eq '5m' || $tf eq '15m') {
-             my $block = ($tf eq '5m') ? 5 : 15;
-             my $bucket_min = $min - ($min % $block);
-             $bucket_time_str = sprintf("%s-%s-%s %02d:%02d%s", $yyyy, $mo, $dd, $hh, $bucket_min, $suffix);
-         }
-         # 2. Temporalidades Intradía (Horas)
-         elsif ($tf eq '1h' || $tf eq '2h' || $tf eq '4h') {
-             my $block = ($tf eq '1h') ? 1 : (($tf eq '2h') ? 2 : 4);
-             my $bucket_hh = $hh - ($hh % $block);
-             $bucket_time_str = sprintf("%s-%s-%s %02d:00:00", $yyyy, $mo, $dd, $bucket_hh);
-         }
-         # 3. Temporalidades Diarias
-         elsif ($tf eq 'D') {
-             $bucket_time_str = sprintf("%s-%s-%s 00:00:00", $yyyy, $mo, $dd);
-         }
-         # 4. Temporalidades Semanales
-         elsif ($tf eq 'W') {
-             require Time::Moment;
-             # Creamos el momento asumiendo UTC para cálculos limpios y rápidos
-             my $tm = Time::Moment->from_string("${yyyy}-${mo}-${dd}T00:00:00Z");
-             my $dow = $tm->day_of_week; # 1 = Lunes, 7 = Domingo
-             
-             # Retrocedemos los días necesarios para anclar al Lunes de esa semana
-             my $monday = $tm->minus_days($dow - 1);
-             $bucket_time_str = sprintf("%04d-%02d-%02d 00:00:00", $monday->year, $monday->month, $monday->day_of_month);
-         }
-         else {
-             warn "[MarketData Error] Temporalidad '$tf' no configurada en build_tf_candles.\n";
-             return;
-         }
-         
-         # Lógica de agrupación de la vela ancla
-         if (!defined $current_bucket_time || $bucket_time_str ne $current_bucket_time) {
-            
-            if (defined $current_candle) {
-               push @{$self->{data}->{$tf}}, $current_candle;
-            }
-            
-            $current_bucket_time = $bucket_time_str;
-            $current_candle = {
-               time   => $bucket_time_str,
-               open   => 0.0 + $candle->{open},
-               high   => 0.0 + $candle->{high},
-               low    => 0.0 + $candle->{low},
-               close  => 0.0 + $candle->{close},
-               volume => 0.0 + $candle->{volume}
-            };
-         } else {
-            # Actualización de extremos si caemos dentro del mismo bloque de tiempo
-            $current_candle->{high}  = $candle->{high} if $candle->{high} > $current_candle->{high};
-            $current_candle->{low}   = $candle->{low}  if $candle->{low}  < $current_candle->{low};
-            $current_candle->{close} = 0.0 + $candle->{close};
-            $current_candle->{volume} += 0.0 + $candle->{volume};
-         }
+      my $bucket = _bucket_epoch($epoch, $tf);
+      next unless defined $bucket;
+
+      if (!defined $current || $bucket != $current_bucket) {
+         push @out, $current if defined $current;
+         $current_bucket = $bucket;
+         $current = {
+            time   => _epoch_to_time_str($bucket),
+            epoch  => $bucket,
+            open   => 0.0 + $c->{open},
+            high   => 0.0 + $c->{high},
+            low    => 0.0 + $c->{low},
+            close  => 0.0 + $c->{close},
+            volume => 0.0 + $c->{volume},
+         };
+      } else {
+         $current->{high}   = $c->{high} if $c->{high} > $current->{high};
+         $current->{low}    = $c->{low}  if $c->{low}  < $current->{low};
+         $current->{close}  = 0.0 + $c->{close};
+         $current->{volume} += 0.0 + $c->{volume};
       }
    }
-   
-   # Guardamos la última vela que quedó formándose en memoria
-   if (defined $current_candle) {
-      push @{$self->{data}->{$tf}}, $current_candle;
-   }
+   push @out, $current if defined $current;
+
+   $self->{data}{$tf} = \@out;
+   return \@out;
 }
-
-=head2 build_timeframes()
-
-Construye progresivamente todas las temporalidades superiores a partir de la base 1m.
-
-=cut
 
 sub build_timeframes {
    my ($self) = @_;
-   
+
    if (defined $self->{candles} && scalar @{$self->{candles}} > 0) {
-      $self->{data}->{'1m'} = $self->{candles};
-   } elsif (defined $self->{data}->{'1m'} && scalar @{$self->{data}->{'1m'}} > 0) {
-      $self->{candles} = $self->{data}->{'1m'};
+      $self->{data}{'1m'} = $self->{candles};
+   } elsif (defined $self->{data}{'1m'} && scalar @{$self->{data}{'1m'}} > 0) {
+      $self->{candles} = $self->{data}{'1m'};
    }
 
    if (!defined $self->{candles} || scalar @{$self->{candles}} == 0) {
-      warn "[MarketData Error] | Build_timeframes: No se encontraron datos base en 'candles' para procesar.\n";
+      warn "[MarketData Error] | build_timeframes: No se encontraron datos base en 'candles'.\n";
       return $self;
    }
 
-   # Generación en cascada de todas las temporalidades soportadas en el OptionMenu
-   $self->build_tf_candles('5m');
-   $self->build_tf_candles('15m');
-   $self->build_tf_candles('1h');
-   $self->build_tf_candles('2h');
-   $self->build_tf_candles('4h');
-   $self->build_tf_candles('D');
-   $self->build_tf_candles('W');
+   for my $tf (qw(5m 15m 1h 2h 4h D W)) {
+      $self->build_tf_candles($tf);
+   }
 
    return $self;
 }
 
 sub set_timeframe {
    my ($self, $tf) = @_;
-   
-   if (defined $tf && exists $self->{data}->{$tf}) {
+
+   if ($self->_supported_timeframe($tf)) {
+      # Reconstruir siempre evita que una temporalidad conserve velas antiguas
+      # si el CSV se recarga o se añaden datos nuevos.
+      $self->{data}{'1m'} = $self->{candles} if $tf eq '1m';
+      $self->build_tf_candles($tf) if $tf ne '1m';
       $self->{timeframe} = $tf;
+
+      # Al cambiar temporalidad se desactiva replay para no mezclar índices
+      # de una compresión anterior con otra diferente.
+      $self->set_replay_mode(0);
    } else {
-      warn "[MarketData Error] | SET_TIMEFRAME : La temporalidad '" . ($tf // 'undef') . "' no está soportada.\n";
+      warn "[MarketData Error] | set_timeframe: La temporalidad '" . ($tf // 'undef') . "' no está soportada.\n";
    }
 
    return $self;
 }
-
-=head2 merge_delta_row()
-
-Gestiona la entrada de datos en tiempo real. 
-
-=cut
 
 sub merge_delta_row {
    my ($self, $row) = @_;
    return $self unless defined $row && ref($row) eq 'HASH' && exists $row->{time};
 
-   my $active_array = $self->_active_array();
-   my $last_idx = $self->last_index();
+   my $epoch = exists $row->{epoch} ? $row->{epoch} : _parse_time_to_epoch($row->{time});
+   $row->{epoch} = $epoch if defined $epoch;
 
-   if ($last_idx >= 0 && $active_array->[$last_idx]->{time} eq $row->{time}) {
-      
-      my $last_candle = $active_array->[$last_idx];
-      
-      $last_candle->{high} = $row->{high} if $row->{high} > $last_candle->{high};
-      $last_candle->{low}  = $row->{low}  if $row->{low}  < $last_candle->{low};
-      
-      $last_candle->{close}  = $row->{close};
-      $last_candle->{volume} = $row->{volume};
+   my $last = $self->{candles}->[-1];
+   if (defined $last && $last->{time} eq $row->{time}) {
+      %$last = (%$last, %$row);
    } else {
-      push @{$active_array}, $row;
+      $self->add_candle($row);
    }
+
+   $self->build_timeframes();
    return $self;
 }
-
 
 1;

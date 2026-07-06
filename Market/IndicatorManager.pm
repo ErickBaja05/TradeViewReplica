@@ -32,7 +32,28 @@ sub update_last
     my ($self, $market_data) = @_;
     for my $name (keys %{$self->{indicators}})
     {
-        $self->{indicators}{$name}->update_last($market_data);
+        my $indicator = $self->{indicators}{$name};
+        next unless $indicator && $indicator->can('update_last');
+        $indicator->update_last($market_data);
+    }
+}
+
+
+# Recalcula todos los indicadores usando todo el historial activo.
+# Si el indicador no tiene recalculate(), se usa update_last() como respaldo.
+sub recalculate_all
+{
+    my ($self, $market_data) = @_;
+    for my $name (keys %{$self->{indicators}})
+    {
+        my $indicator = $self->{indicators}{$name};
+        next unless $indicator;
+        if ($indicator->can('recalculate')) {
+            $indicator->recalculate($market_data);
+        }
+        elsif ($indicator->can('update_last')) {
+            $indicator->update_last($market_data);
+        }
     }
 }
 
@@ -46,6 +67,15 @@ sub get
         return undef;
     }
     return $self->{indicators}{$name}->get_values();
+}
+
+
+# Devuelve la instancia real de un indicador para overlays que necesitan getters propios
+sub get_indicator_object
+{
+    my ($self, $name) = @_;
+    return undef if not exists $self->{indicators}{$name};
+    return $self->{indicators}{$name};
 }
 
 # Devuelve una porción de valores del indicador

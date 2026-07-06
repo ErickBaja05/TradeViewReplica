@@ -58,7 +58,10 @@ sub set_scale {
     my $height = $self->{canvas}->Height();
     my ($start_index, $end_index) = $self->{engine}->compute_window();
     my $visible_bars = $self->{engine}->{visible_bars} || 100;
-    my $scale_offset = $end_index - $visible_bars + 1;
+    my $total_bars = $self->{engine}->{market_data} ? ($self->{engine}->{market_data}->size() || 0) : 0;
+    my $scale_offset = ($total_bars > 0 && $visible_bars >= $total_bars)
+        ? ($end_index - $visible_bars + 1)   # deja respiro cuando hay pocas velas
+        : $start_index;                      # ventana normal cuando hay suficiente histórico
 
     $self->{scale} = Market::Panels::Scales->new(
         width        => $width,
@@ -238,36 +241,38 @@ sub draw_time_axis {
     my $scale = $self->{scale};
     my ($start_index, $end_index) = $self->{engine}->compute_window();
     my $canvas_height = $self->{canvas}->Height();
+    my $time_height = $time_cv->Height() || 24;
+
+    # Línea superior suave para separar el gráfico del eje de tiempo.
+    $time_cv->createLine(0, 0, $time_cv->Width(), 0, -fill => '#d9dde3');
 
     for my $etiqueta (@$etiquetas) {
-        my $pos_relativa = $etiqueta->{indice_relativo} // 0;
-        my $absolute_index = $start_index + $pos_relativa;
-        my $x = $scale->index_to_center_x($absolute_index);
-        
-        my $texto = $etiqueta->{timestamp};
-        my ($hora) = $texto =~ /T?(\d{2}:\d{2})/;
-        $hora //= $texto; 
+        my $absolute_index = defined $etiqueta->{index}
+            ? $etiqueta->{index}
+            : $start_index + ($etiqueta->{indice_relativo} // 0);
+        next if $absolute_index < $start_index || $absolute_index > $end_index;
 
-        my $color_texto = '#4b4b4c';
-        my $font_weight = 'normal';
-        
+        my $x = $scale->index_to_center_x($absolute_index);
+        my $texto = defined $etiqueta->{text} ? $etiqueta->{text} : ($etiqueta->{timestamp} || '');
+
+        my $color_texto = $etiqueta->{es_cambio_dia} ? '#131722' : '#4b4b4c';
+        my $font_weight = $etiqueta->{es_cambio_dia} ? 'bold' : 'normal';
+
+        # Una guía vertical muy clara solo en marcas importantes. No usa el mismo
+        # estilo de las etiquetas SMC/liquidez para que no se confundan.
         if ($etiqueta->{es_cambio_dia}) {
-            $color_texto = '#000000';
-            $font_weight = 'bold';
-            
-            # --- ¡AQUÍ ESTÁ LA MAGIA! ---
-            # Extraemos solo el día (los dos últimos dígitos de la fecha YYYY-MM-DD)
-            if ($texto =~ /^\d{4}-\d{2}-(\d{2})/) {
-                $hora = int($1); # int() quita el cero a la izquierda (ej: "05" -> "5")
-            }
-            
+            $self->{canvas}->createLine(
+                $x, 0, $x, $canvas_height,
+                -fill => '#e1e5eb',
+                -width => 1
+            );
         }
-        
+
         $time_cv->createText(
-            $x, 12,
-            -text => $hora,
+            $x, int($time_height / 2),
+            -text => $texto,
             -fill => $color_texto,
-            -font => ['Helvetica', 10, $font_weight]
+            -font => ['Helvetica', 9, $font_weight]
         );
     }
 }

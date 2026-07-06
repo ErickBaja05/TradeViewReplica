@@ -408,79 +408,164 @@ sub bind_events {
     $mw->Tk::bind('<Key-R>', sub { $self->reset_view(); });
 }
 
+sub _ceil_int {
+    my ($self, $value) = @_;
+    my $i = int($value);
+    return ($value > $i) ? $i + 1 : $i;
+}
+
+sub _parse_timestamp_parts {
+    my ($self, $ts) = @_;
+    return unless defined $ts;
+    if ($ts =~ /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/) {
+        return ($1, $2, $3, $4, $5);
+    }
+    return;
+}
+
+sub _month_short_name {
+    my ($self, $month) = @_;
+    my @names = qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec);
+    my $idx = int($month) - 1;
+    return $names[$idx] || $month;
+}
+
+sub _format_day_axis_label {
+    my ($self, $ts, $prev_date) = @_;
+    my ($y, $m, $d, $hh, $mm) = $self->_parse_timestamp_parts($ts);
+    return $ts unless defined $d;
+
+    my $label = int($d);
+    if (!defined $prev_date || $prev_date eq '' || $prev_date !~ /^$y-$m-/) {
+        $label = int($d) . '/' . int($m);
+    }
+    return $label;
+}
+
+sub _time_axis_interval_minutes {
+    my ($self, $tf, $visible_bars, $candle_px) = @_;
+
+    # Intervalos cómodos para que el eje no se llene al aumentar la temporalidad.
+    # La idea es parecida al proyecto guía: no se dibuja cada vela, sino marcas
+    # importantes y separadas visualmente.
+    return 15   if $tf eq '1m'  && $visible_bars <= 80;
+    return 30   if $tf eq '1m'  && $visible_bars <= 180;
+    return 60   if $tf eq '1m';
+
+    return 30   if $tf eq '5m'  && $visible_bars <= 120;
+    return 60   if $tf eq '5m'  && $visible_bars <= 260;
+    return 120  if $tf eq '5m';
+
+    return 60   if $tf eq '15m' && $visible_bars <= 160;
+    return 180  if $tf eq '15m' && $visible_bars <= 320;
+    return 360  if $tf eq '15m';
+
+    return 360  if $tf eq '1h'  && $visible_bars <= 160;
+    return 720  if $tf eq '1h';
+
+    return 720  if $tf eq '2h';
+    return 1440 if $tf eq '4h';
+
+    return 1440;
+}
+
 sub compute_intraday_labels {
     my ($self) = @_;
     my ($start, $end) = $self->compute_window();
     my $velas = $self->{market_data}->get_data();
-    my @etiquetas_visibles;
+    my @selected;
 
-    my $visibles = $self->{visible_bars};
-    my $salto = 1;
-    $salto = 5  if $visibles > 30;
-    $salto = 10 if $visibles > 100;
-    $salto = 50 if $visibles > 500;
+    return \@selected unless $velas && @$velas && $end >= $start;
 
-    my $ultimo_dia_visto = "";
-    my %cambios_de_dia;
+    my $tf = $self->{market_data}->{timeframe} || '1m';
+    my $visible_bars = $self->{visible_bars} || ($end - $start + 1) || 1;
+    my $canvas_width = $self->{price_canvas} ? ($self->{price_canvas}->Width() || 800) : 800;
+    my $candle_px = $canvas_width / $visible_bars;
+    $candle_px = 1 if $candle_px < 1;
 
-    # FASE 1: Identificar índices absolutos donde cambia el día
+    my $min_px = 72;
+    $min_px = 60 if $visible_bars <= 80;
+    $min_px = 86 if $visible_bars > 180;
+    my $min_bars_between_labels = $self->_ceil_int($min_px / $candle_px);
+    $min_bars_between_labels = 1 if $min_bars_between_labels < 1;
+
+    my $interval_minutes = $self->_time_axis_interval_minutes($tf, $visible_bars, $candle_px);
+    my $last_date = '';
+    my $prev_visible_date = '';
+
+    my @candidates;
+
     for my $i ($start .. $end) {
         my $vela = $velas->[$i];
-        last unless $vela;
-        my $ts = $vela->{time} || "";
-        my ($dia_actual) = $ts =~ /^(\d{4}-\d{2}-\d{2})/;
-        $dia_actual //= "";
+        next unless $vela;
+        my $ts = $vela->{time} || '';
+        my ($y, $m, $d, $hh, $mm) = $self->_parse_timestamp_parts($ts);
+        next unless defined $d;
 
-        if ($dia_actual ne $ultimo_dia_visto && $ultimo_dia_visto ne "") {
-            $cambios_de_dia{$i} = 1;
-        }
-        $ultimo_dia_visto = $dia_actual if $dia_actual;
-    }
+        my $date = "$y-$m-$d";
+        my $minute_of_day = int($hh) * 60 + int($mm);
+        my $is_first_visible = ($i == $start) ? 1 : 0;
+        my $is_new_day = ($last_date ne '' && $date ne $last_date) ? 1 : 0;
 
-    $ultimo_dia_visto = "";
-    
-    # FASE 2: Construir etiquetas ancladas a la vela real (Permite paneo fluido)
-    for my $i ($start .. $end) {
-        my $vela = $velas->[$i];
-        last unless $vela;
-        my $ts = $vela->{time} || "";
-        my ($dia_actual) = $ts =~ /^(\d{4}-\d{2}-\d{2})/;
-        $dia_actual //= "";
-        $ultimo_dia_visto = $dia_actual if $dia_actual;
-
-        # Si es un cambio de día, lo dibujamos siempre (en negrita en el PricePanel)
-        if ($cambios_de_dia{$i}) {
-            push @etiquetas_visibles, {
-                indice_relativo => $i - $start, 
-                timestamp       => $ts,
-                es_cambio_dia   => 1
+        if ($tf eq 'D' || $tf eq 'W') {
+            my $txt = int($d) . '/' . int($m);
+            $txt = $self->_month_short_name($m) . ' ' . int($d) if $tf eq 'W';
+            push @candidates, {
+                index          => $i,
+                indice_relativo => $i - $start,
+                timestamp      => $ts,
+                text           => $txt,
+                major          => 1,
+                es_cambio_dia  => 1,
             };
-        } 
-        # Si es una etiqueta normal de minutos
-        elsif ($i % $salto == 0) {
-            # Evitar solapamiento: No dibujar si hay un cambio de día muy cerca
-            my $colision = 0;
-            my $tolerancia = int($salto * 0.25); # 25% de tolerancia de colisión
-            $tolerancia = 1 if $tolerancia < 1;
-            
-            for my $j ($i - $tolerancia .. $i + $tolerancia) {
-                if ($cambios_de_dia{$j}) {
-                    $colision = 1;
-                    last;
-                }
-            }
+        }
+        elsif ($is_first_visible || $is_new_day) {
+            push @candidates, {
+                index          => $i,
+                indice_relativo => $i - $start,
+                timestamp      => $ts,
+                text           => $self->_format_day_axis_label($ts, $prev_visible_date),
+                major          => 1,
+                es_cambio_dia  => 1,
+            };
+        }
+        elsif ($minute_of_day % $interval_minutes == 0) {
+            push @candidates, {
+                index          => $i,
+                indice_relativo => $i - $start,
+                timestamp      => $ts,
+                text           => sprintf('%02d:%02d', int($hh), int($mm)),
+                major          => 0,
+                es_cambio_dia  => 0,
+            };
+        }
 
-            if (!$colision) {
-                push @etiquetas_visibles, {
-                    indice_relativo => $i - $start, 
-                    timestamp       => $ts,
-                    es_cambio_dia   => 0
-                };
-            }
+        $prev_visible_date = $last_date if $date ne $last_date && $last_date ne '';
+        $last_date = $date;
+    }
+
+    for my $cand (@candidates) {
+        if (!@selected) {
+            push @selected, $cand;
+            next;
+        }
+
+        my $gap = $cand->{index} - $selected[-1]->{index};
+        if ($gap >= $min_bars_between_labels) {
+            push @selected, $cand;
+            next;
+        }
+
+        # Si aparece un cambio de día cerca de una hora normal, se conserva el día
+        # y se elimina la hora anterior. Así el eje queda limpio y legible.
+        if ($cand->{major} && !$selected[-1]->{major}) {
+            pop @selected;
+            push @selected, $cand;
+            next;
         }
     }
 
-    return \@etiquetas_visibles;
+    return \@selected;
 }
 
 sub vertical_zoom {
@@ -504,10 +589,80 @@ sub vertical_zoom {
     $self->request_render();
 }
 
+
+sub recalculate_indicators {
+    my ($self) = @_;
+    return unless $self->{market_data};
+
+    if ($self->{indicator_manager}) {
+        # Recalcular ATR/Liquidez sobre todo el historial activo.
+        # Esto mantiene sincronizados ATR, liquidez y SMC al cambiar temporalidad o Replay.
+        if ($self->{indicator_manager}->can('recalculate_all')) {
+            $self->{indicator_manager}->recalculate_all($self->{market_data});
+        } else {
+            $self->{indicator_manager}->reset_all() if $self->{indicator_manager}->can('reset_all');
+            $self->{indicator_manager}->update_last($self->{market_data});
+        }
+    }
+
+    if ($self->{smc_indicator} && $self->{smc_indicator}->can('recalculate')) {
+        $self->{smc_indicator}->recalculate($self->{market_data});
+    }
+}
+
+
+sub fit_all {
+    my ($self) = @_;
+    my $n = $self->{market_data} ? ($self->{market_data}->size() || 0) : 0;
+
+    my $default_visible = 150;
+    if ($n > 0 && $n < $default_visible) {
+        # Igual que el proyecto guía: si la temporalidad tiene pocas velas,
+        # se ajusta la ventana al total y se deja un pequeño respiro visual.
+        $self->{visible_bars} = $n + 4;
+    } else {
+        $self->{visible_bars} = $default_visible;
+    }
+
+    $self->{offset} = 0;
+}
+
 sub set_timeframe {
     my ($self, $tf) = @_;
-    $self->{market_data}->set_timeframe($tf) if $self->{market_data} && $self->{market_data}->can('set_timeframe');
-    $self->reset_view(); 
+    return unless $self->{market_data} && $self->{market_data}->can('set_timeframe');
+
+    # Al cambiar temporalidad se hace un cambio limpio, como en el proyecto guía:
+    # primero se corta cualquier replay, luego se cambia el arreglo activo, se
+    # recalculan indicadores desde cero y recién después se redibuja.
+    $self->pause_replay() if $self->can('pause_replay');
+    $self->{market_data}->set_timeframe($tf);
+
+    $self->fit_all();
+    $self->{render_pending} = 0;
+
+    $self->{crosshair_x} = undef;
+    $self->{crosshair_y} = undef;
+    $self->{crosshair_w} = undef;
+    $self->{last_drag_x} = undef;
+    $self->{last_drag_y} = undef;
+
+    $self->{auto_scale} = 1;
+    $self->{atr_auto_scale} = 1;
+    $self->{manual_y_max} = undef;
+    $self->{manual_y_min} = undef;
+    $self->{atr_manual_y_max} = undef;
+    $self->{atr_manual_y_min} = undef;
+
+    # Limpieza inmediata para que no quede ninguna etiqueta/línea de la temporalidad anterior.
+    $self->{price_canvas}->delete('all')      if $self->{price_canvas};
+    $self->{atr_canvas}->delete('all')        if $self->{atr_canvas};
+    $self->{time_canvas}->delete('all')       if $self->{time_canvas};
+    $self->{price_axis_canvas}->delete('all') if $self->{price_axis_canvas};
+    $self->{atr_axis_canvas}->delete('all')   if $self->{atr_axis_canvas};
+
+    $self->set_auto_scale(1);
+    $self->recalculate_indicators();
+    $self->request_render();
 }
 
 sub on_mouse_move {
@@ -575,6 +730,12 @@ sub horizontal_zoom {
     my $new_bars = $current_bars + ($delta > 0 ? -$bars_change : $bars_change);
     $new_bars = 2 if $new_bars < 2;
 
+    my $total_candles_for_clamp = $self->{market_data} ? ($self->{market_data}->size() || 0) : 0;
+    if ($total_candles_for_clamp > 0) {
+        my $max_visible = $total_candles_for_clamp + 4;
+        $new_bars = $max_visible if $new_bars > $max_visible;
+    }
+
     if (defined $self->{price_panel} && defined $self->{price_panel}->{scale}) {
         my $scale = $self->{price_panel}->{scale};
         my $total_candles = $self->{market_data} ? $self->{market_data}->size() : 0;
@@ -618,8 +779,7 @@ sub horizontal_zoom {
 sub reset_view {
     my ($self) = @_;
     
-    $self->{visible_bars} = 150; 
-    $self->{offset} = 0;   
+    $self->fit_all();
     $self->set_auto_scale(1);
     
     $self->{atr_auto_scale} = 1;
@@ -712,8 +872,8 @@ sub play_replay {
         my $advanced = $self->{market_data}->step_forward();
         if ($advanced) {
             $self->request_render();
-            # Notificamos a los indicadores que se actualicen
-            $self->{indicator_manager}->update_last($self->{market_data});
+            # Recalcular indicadores para que el Replay no deje estructuras adelantadas.
+            $self->recalculate_indicators();
             
             # Programamos el siguiente tick
             $self->{replay_timer_id} = $mw->after($self->{replay_speed}, $step_cb);
@@ -739,7 +899,7 @@ sub step_forward {
     my ($self) = @_;
     $self->pause_replay(); # El paso manual pausa la reproducción automática
     if ($self->{market_data}->step_forward()) {
-        $self->{indicator_manager}->update_last($self->{market_data});
+        $self->recalculate_indicators();
         $self->request_render();
     }
 }
@@ -748,8 +908,7 @@ sub step_backward {
     my ($self) = @_;
     $self->pause_replay();
     if ($self->{market_data}->step_backward()) {
-        # Al retroceder, idealmente deberías regenerar o usar un snapshot de memoria 
-        # en SMC_Structures, pero renderizar hacia atrás funciona para la vista.
+        $self->recalculate_indicators();
         $self->request_render();
     }
 }

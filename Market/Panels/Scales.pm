@@ -82,12 +82,12 @@ sub _draw_y_scale {
     my $range = $self->{y_max} - $self->{y_min};
     return if $range <= 0;
 
-    my $grid_color = '#1f2933'; 
+    my $grid_color = '#e9ecef'; 
     my $text_color = '#787b86'; 
     my $plot_width = $self->{width}; 
 
     # Borde separador derecho en el canvas principal
-    $canvas->createLine($plot_width - 1, 0, $plot_width - 1, $self->{height}, -fill => $grid_color);
+    $canvas->createLine($plot_width - 1, 0, $plot_width - 1, $self->{height}, -fill => '#d9dde3');
 
     # --- MAGIA TRADINGVIEW: CÁLCULO DINÁMICO DE EJES ---
     
@@ -136,7 +136,7 @@ sub _draw_y_scale {
         }
 
         # Cuadrícula horizontal en el lienzo de las velas
-        $canvas->createLine(0, $y, $plot_width, $y, -fill => $grid_color, -dash => '.');
+        $canvas->createLine(0, $y, $plot_width, $y, -fill => $grid_color);
 
         # Los números se envían exclusivamente al lienzo lateral que armamos (si existe)
         if ($axis_canvas) {

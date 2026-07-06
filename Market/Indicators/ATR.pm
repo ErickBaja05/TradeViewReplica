@@ -87,6 +87,65 @@ sub update_last
         }
 }
 
+
+# Recalcula el ATR para todo el historial activo.
+# Esto corrige el problema donde la línea de volatilidad desaparecía
+# porque solo se calculaba la última vela después de resetear indicadores.
+sub recalculate
+{
+    my ($self, $market_data) = @_;
+    $self->reset();
+    return unless $market_data;
+
+    my $size = $market_data->size();
+    return if $size <= 0;
+
+    for my $i (0 .. $size - 1) {
+        my $candle = $market_data->get_candle($i);
+        next unless $candle;
+
+        my $high  = $candle->{high};
+        my $low   = $candle->{low};
+        my $close = $candle->{close};
+
+        my $tr;
+        if (!defined $self->{prev_close}) {
+            $tr = $high - $low;
+        } else {
+            my $highlow   = $high - $low;
+            my $highclose = abs($high - $self->{prev_close});
+            my $lowclose  = abs($low  - $self->{prev_close});
+            $tr = $highlow;
+            $tr = $highclose if $highclose > $tr;
+            $tr = $lowclose  if $lowclose  > $tr;
+        }
+
+        $self->{prev_close} = $close;
+        my $period = $self->{period};
+
+        if (!$self->{wilder_phase}) {
+            $self->{tr_sum} += $tr;
+            $self->{tr_count} += 1;
+            push @{$self->{values}}, undef;
+
+            if ($self->{tr_count} >= $period) {
+                my $first_atr = $self->{tr_sum} / $period;
+                my $start = scalar(@{$self->{values}}) - $period;
+                for my $j ($start .. $#{$self->{values}}) {
+                    $self->{values}[$j] = $first_atr;
+                }
+                $self->{last_atr} = $first_atr;
+                $self->{wilder_phase} = 1;
+            }
+        }
+        else {
+            my $atr = ($self->{last_atr} * ($period - 1) + $tr) / $period;
+            push @{$self->{values}}, $atr;
+            $self->{last_atr} = $atr;
+        }
+    }
+}
+
 # Devuelve serie completa del ATR
 sub get_values
 {

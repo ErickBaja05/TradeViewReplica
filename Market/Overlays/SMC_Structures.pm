@@ -14,7 +14,9 @@ sub new {
     $self->{smc_indicator} = $args{smc_indicator};
 
     # 3. Propiedades visuales específicas
-    $self->{fvg_max_lifetime} = $args{fvg_max_lifetime} || 50;
+    $self->{fvg_max_lifetime} = $args{fvg_max_lifetime} || 35;
+    $self->{max_fvg_visible}  = $args{max_fvg_visible}  || 25;
+    $self->{max_structure_visible} = $args{max_structure_visible} || 35;
 
     $self->{bg_color}   = [251, 252, 248]; # Fondo del Canvas: #fbfcf8
     $self->{bull_color} = [38, 166, 154];  # Verde institucional
@@ -22,6 +24,8 @@ sub new {
 
     $self->{bos_color}       = '#131722';
     $self->{choch_color}     = '#8e24aa';
+    $self->{internal_line_color} = '#9aa3ad';
+    $self->{external_line_color} = '#2962ff';
     $self->{bull_text_color} = '#00897b';
     $self->{bear_text_color} = '#d32f2f';
 
@@ -51,6 +55,10 @@ sub render {
     # Dibujar primero las zonas FVG para que queden como fondo.
     $self->_render_fvg($indicator, $start_index, $end_index, $scale)
         if $self->{show_fvg};
+
+    # Dibujar líneas de estructura interna/externa antes de los eventos.
+    $self->_render_structure_paths($indicator, $start_index, $end_index, $scale)
+        if $self->{show_structure};
 
     # Dibujar BOS / CHOCH encima de FVG.
     $self->_render_structure($indicator, $start_index, $end_index, $scale)
@@ -87,6 +95,109 @@ sub _get_smc_indicator {
     return undef;
 }
 
+
+# ==========================================================
+# 0. Líneas de estructura interna y externa
+# ==========================================================
+sub _render_structure_paths {
+    my ($self, $indicator, $start_index, $end_index, $scale) = @_;
+
+    my $canvas = $self->{canvas};
+
+    my $internal = $indicator->can('get_internal_swings') ? $indicator->get_internal_swings() : [];
+    my $external = $indicator->can('get_external_swings') ? $indicator->get_external_swings() : [];
+
+    $internal = [] unless $internal && ref($internal) eq 'ARRAY';
+    $external = [] unless $external && ref($external) eq 'ARRAY';
+
+    # Interna: equivalente al ZZMTF. Se dibuja por tramos verde/rojo para
+    # mostrar dirección de baja/mediana temporalidad sin saturar etiquetas.
+    $self->_draw_directional_zigzag(
+        swings      => $internal,
+        start_index => $start_index,
+        end_index   => $end_index,
+        scale       => $scale,
+        width       => 1,
+        tag         => 'smc_internal_path'
+    );
+
+    # Externa: línea principal azul, equivalente al ZigZag Volume Profile.
+    $self->_draw_polyline_from_swings(
+        swings      => $external,
+        start_index => $start_index,
+        end_index   => $end_index,
+        scale       => $scale,
+        color       => $self->{external_line_color},
+        width       => 2,
+        dash        => undef,
+        tag         => 'smc_external_path'
+    );
+}
+
+sub _draw_directional_zigzag {
+    my ($self, %args) = @_;
+    my $canvas = $self->{canvas};
+    my $swings = $args{swings} || [];
+    return unless @$swings >= 2;
+
+    my $scale = $args{scale};
+    my $start_index = $args{start_index};
+    my $end_index = $args{end_index};
+
+    for my $i (1 .. $#$swings) {
+        my $a = $swings->[$i - 1];
+        my $b = $swings->[$i];
+        next unless $a && $b;
+        next unless defined $a->{index} && defined $b->{index};
+        next unless defined $a->{price} && defined $b->{price};
+        next if $b->{index} < ($start_index - 20) || $a->{index} > ($end_index + 20);
+
+        my $x1 = $scale->index_to_center_x($a->{index});
+        my $y1 = $scale->value_to_y($a->{price});
+        my $x2 = $scale->index_to_center_x($b->{index});
+        my $y2 = $scale->value_to_y($b->{price});
+
+        my $color = ($b->{price} >= $a->{price}) ? $self->{bull_text_color} : $self->{bear_text_color};
+        $canvas->createLine(
+            $x1, $y1, $x2, $y2,
+            -fill  => $color,
+            -width => $args{width} || 1,
+            -tags  => ['smc_layer', $args{tag} || 'smc_internal_path']
+        );
+    }
+}
+
+sub _draw_polyline_from_swings {
+    my ($self, %args) = @_;
+    my $canvas = $self->{canvas};
+    my $swings = $args{swings} || [];
+    return unless @$swings >= 2;
+
+    my $scale = $args{scale};
+    my $start_index = $args{start_index};
+    my $end_index = $args{end_index};
+
+    my @points;
+    for my $s (@$swings) {
+        next unless $s && ref($s) eq 'HASH';
+        my $idx = $s->{index};
+        my $price = $s->{price};
+        next unless defined $idx && defined $price;
+        next if $idx < ($start_index - 20) || $idx > ($end_index + 20);
+        push @points, $scale->index_to_center_x($idx), $scale->value_to_y($price);
+    }
+    return unless @points >= 4;
+
+    my %opts = (
+        -fill  => $args{color},
+        -width => $args{width} || 1,
+        -tags  => ['smc_layer', $args{tag} || 'smc_path']
+    );
+    $opts{-dash} = $args{dash} if defined $args{dash};
+
+    $canvas->createLine(@points, %opts);
+}
+
 # ==========================================================
 # 1. FVG
 # ==========================================================
@@ -99,7 +210,9 @@ sub _render_fvg {
     my $fvgs = $indicator->get_fvg();
     return unless $fvgs && ref($fvgs) eq 'ARRAY';
 
-    foreach my $fvg (@$fvgs) {
+    my $drawn_fvg = 0;
+    foreach my $fvg (reverse @$fvgs) {
+        last if $drawn_fvg >= $self->{max_fvg_visible};
         next unless $fvg && ref($fvg) eq 'HASH';
 
         my $created_index = $fvg->{created_index};
@@ -166,8 +279,14 @@ sub _render_fvg {
         # Etiqueta pequeña del FVG solo cerca del inicio.
         my $label = $type eq 'BULLISH' ? 'FVG+' : 'FVG-';
 
+        $drawn_fvg++;
+
+        # Etiqueta pequeña del FVG solo cerca del inicio.
+        my $label_x = $x1 + 4;
+        next if $label_x < 0 || $label_x > $scale->{width};
+
         $canvas->createText(
-            $x1 + 4,
+            $label_x,
             $y1 + 9,
             -text   => $label,
             -fill   => $type eq 'BULLISH' ? $self->{bull_text_color} : $self->{bear_text_color},
@@ -192,7 +311,9 @@ sub _render_structure {
     $bos_list   = [] unless $bos_list   && ref($bos_list)   eq 'ARRAY';
     $choch_list = [] unless $choch_list && ref($choch_list) eq 'ARRAY';
 
-    my @structural_events = (@$bos_list, @$choch_list);
+    my @structural_events = sort { ($b->{break_index} // 0) <=> ($a->{break_index} // 0) } (@$bos_list, @$choch_list);
+    splice(@structural_events, $self->{max_structure_visible}) if @structural_events > $self->{max_structure_visible};
+    @structural_events = sort { ($a->{break_index} // 0) <=> ($b->{break_index} // 0) } @structural_events;
 
     foreach my $struct (@structural_events) {
         next unless $struct && ref($struct) eq 'HASH';
@@ -269,84 +390,47 @@ sub _render_swing_labels {
     my $swings = $indicator->get_swings();
     return unless $swings && ref($swings) eq 'HASH';
 
-    my $highs = $swings->{highs} || [];
-    my $lows  = $swings->{lows}  || [];
-
-    $highs = [] unless ref($highs) eq 'ARRAY';
-    $lows  = [] unless ref($lows)  eq 'ARRAY';
+    my $structure = $swings->{structure} || [];
+    $structure = [] unless ref($structure) eq 'ARRAY';
 
     my $drawn = 0;
-
-    # Swing highs: HH / LH
-    my $previous_high;
-    foreach my $swing (@$highs) {
+    foreach my $swing (@$structure) {
         next unless $swing && ref($swing) eq 'HASH';
 
         my $index = $swing->{index};
         my $price = $swing->{price};
+        my $label = $swing->{label};
 
         next unless defined $index;
         next unless defined $price;
+        next unless defined $label;
+        next if $label eq 'H' || $label eq 'L';
         next if $index < $start_index || $index > $end_index;
 
-        my $label = 'SH';
-
-        if (defined $previous_high && defined $previous_high->{price}) {
-            $label = $price > $previous_high->{price} ? 'HH' : 'LH';
-        }
-
         my $x = $scale->index_to_center_x($index);
-        my $y = $scale->value_to_y($price) - 12;
+        my $is_high = ($swing->{type} || '') eq 'HIGH';
+        my $is_external = ($swing->{structure_class} || '') eq 'EXTERNAL';
+        my $y = $scale->value_to_y($price) + ($is_high ? -13 : 13);
+
+        # Las etiquetas externas van un poco más fuertes; las internas son más pequeñas.
+        my $font_size = $is_external ? 8 : 6;
+        my $color = $is_external
+            ? $self->{external_line_color}
+            : ($is_high ? $self->{bear_text_color} : $self->{bull_text_color});
+
+        my $prefix = $is_external ? '' : 'i';
 
         $self->_draw_label(
-            x     => $x,
-            y     => $y,
-            text  => $label,
-            color => $self->{bear_text_color},
-            anchor => 'center',
-            font_size => 7
+            x        => $x,
+            y        => $y,
+            text     => $prefix . $label,
+            color    => $color,
+            anchor   => 'center',
+            font_size=> $font_size
         );
 
         $drawn++;
         last if $drawn >= $self->{max_swing_labels};
-
-        $previous_high = $swing;
-    }
-
-    # Swing lows: HL / LL
-    my $previous_low;
-    foreach my $swing (@$lows) {
-        next unless $swing && ref($swing) eq 'HASH';
-
-        my $index = $swing->{index};
-        my $price = $swing->{price};
-
-        next unless defined $index;
-        next unless defined $price;
-        next if $index < $start_index || $index > $end_index;
-
-        my $label = 'SL';
-
-        if (defined $previous_low && defined $previous_low->{price}) {
-            $label = $price > $previous_low->{price} ? 'HL' : 'LL';
-        }
-
-        my $x = $scale->index_to_center_x($index);
-        my $y = $scale->value_to_y($price) + 12;
-
-        $self->_draw_label(
-            x     => $x,
-            y     => $y,
-            text  => $label,
-            color => $self->{bull_text_color},
-            anchor => 'center',
-            font_size => 7
-        );
-
-        $drawn++;
-        last if $drawn >= $self->{max_swing_labels};
-
-        $previous_low = $swing;
     }
 }
 
@@ -394,8 +478,7 @@ sub _draw_label {
         $x2, $y2,
         -fill    => $self->{label_bg_color},
         -outline => '',
-        -stipple => 'gray50',
-        -tags    => ['smc_layer', 'smc_fvg']
+        -tags    => ['smc_layer', 'smc_label_bg']
     );
 
     $canvas->createText(

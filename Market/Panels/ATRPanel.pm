@@ -75,7 +75,10 @@ sub set_scale {
     
     my ($start_index, $end_index) = $self->{engine}->compute_window();
     my $visible_bars = $self->{engine}->{visible_bars} || 100;
-    my $scale_offset = $end_index - $visible_bars + 1;
+    my $total_bars = $self->{engine}->{market_data} ? ($self->{engine}->{market_data}->size() || 0) : 0;
+    my $scale_offset = ($total_bars > 0 && $visible_bars >= $total_bars)
+        ? ($end_index - $visible_bars + 1)   # deja respiro cuando hay pocas velas
+        : $start_index;                      # ventana normal cuando hay suficiente histórico
 
     $self->{scale} = Market::Panels::Scales->new(
         width        => $width,

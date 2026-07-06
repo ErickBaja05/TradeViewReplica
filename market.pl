@@ -48,8 +48,7 @@ my $tf_menu = $control_panel->Optionmenu(
     -fg           => '#131722',
     -command      => sub { 
         if ($chart_engine) {
-            $chart_engine->set_timeframe($selected_tf); 
-            $chart_engine->reset_view();
+            $chart_engine->set_timeframe($selected_tf);
         }
     }
 )->pack(-side => 'left', -padx => 3);
@@ -246,8 +245,16 @@ $indicator_manager->register('ATR', $atr_real);
 
 # Indicador de Liquidez: detecta BSL, SSL, Sweeps, Grabs y Runs
 my $liquidity_real = Market::Indicators::Liquidity->new(
-    atr_period => 14,
-    k_depth    => 3
+    atr_period     => 14,
+    k_depth        => 3,
+
+    # Configuración del zigzag solicitada por el profesor:
+    # interno: estilo ZZMTF en 30 minutos con periodo 2;
+    # externo: estilo ZigZag Volume Profile con longitud 150.
+    internal_tf     => '30m',
+    internal_period => 2,
+    external_length => 150,
+    external_amount => 20,
 );
 $indicator_manager->register('Liquidity', $liquidity_real);
 
@@ -283,42 +290,41 @@ $smc_overlay = Market::Overlays::SMC_Structures->new(
     # Opciones visuales para Sprint 1
     show_fvg         => 1,
     show_structure   => 1,
-    show_swings      => 0,
-    max_swing_labels => 0,
+    show_swings      => 1,
+    max_swing_labels => 45,
 );
 $chart_engine->add_overlay($smc_overlay);
 
 
 
-# --- LECTURA DE DATOS OPTIMIZADA PARA LA PRESENTACIÓN ---
-my $archivo_csv = 'datos.csv';
+# --- LECTURA DE DATOS COMPLETA ---
+# Antes se cargaban solo las últimas 3000 velas. Eso hacía que en 2h, 4h, D y W
+# apareciera únicamente un pedazo del histórico y que la escala/etiquetas quedaran mal.
+# Ahora se lee todo el CSV, como en el proyecto guía, y luego se construyen las temporalidades.
+my $archivo_csv = "$FindBin::Bin/datos.csv";
 open(my $fh, '<', $archivo_csv) or die "No se pudo abrir el archivo '$archivo_csv' $!\n";
 
-my @todas_las_lineas = <$fh>;
-close($fh);
-
-my $limite_velas = 3000; # <--- Esto hace que cargue en 2 segundos en vez de 20 minutos
-my $inicio = scalar(@todas_las_lineas) > $limite_velas ? scalar(@todas_las_lineas) - $limite_velas : 1;
-
-for my $i ($inicio .. $#todas_las_lineas) {
-    my $linea = $todas_las_lineas[$i];
+my $encabezado = <$fh>;
+while (my $linea = <$fh>) {
     chomp $linea;
+    next if $linea =~ /^\s*$/;
 
     my ($time, $open, $high, $low, $close, $volume) = split(',', $linea);
-    
-    $market_data->add_candle({
-        time   => $time, open => 0.0 + $open, high => 0.0 + $high,
-        low    => 0.0 + $low, close => 0.0 + $close, volume => 0.0 + $volume
-    });
+    next unless defined $time && defined $open && defined $high && defined $low && defined $close && defined $volume;
 
-    $indicator_manager->update_last($market_data);
-    
-    my $current_index = $market_data->last_index();
-    $smc_real->update($current_index) if defined $current_index && $current_index >= 0;
+    $market_data->add_candle({
+        time   => $time,
+        open   => 0.0 + $open,
+        high   => 0.0 + $high,
+        low    => 0.0 + $low,
+        close  => 0.0 + $close,
+        volume => 0.0 + $volume,
+    });
 }
+close($fh);
 
 # # --- LECTURA DE DATOS ---
-# my $archivo_csv = 'datos.csv';
+# my $archivo_csv = "$FindBin::Bin/datos.csv";
 
 # open(my $fh, '<', $archivo_csv) or die "No se pudo abrir el archivo '$archivo_csv' $!\n";
 
@@ -353,6 +359,12 @@ for my $i ($inicio .. $#todas_las_lineas) {
 
 # Inicializamos temporalidades (aquí deberías agregar las lógicas de HTF luego)
 $market_data->build_timeframes();
+
+# Cálculo único y limpio después de cargar los datos y construir temporalidades.
+$indicator_manager->recalculate_all($market_data);
+$smc_real->recalculate($market_data);
+$chart_engine->{smc_indicator} = $smc_real;
+$chart_engine->fit_all();
 
 
 # Inicialización gráfica
