@@ -66,13 +66,15 @@ sub draw {
         my $y1 = $scale->value_to_y($z->{top});
         my $y2 = $scale->value_to_y($z->{bottom});
 
-        my ($fill, $outline);
+        my ($fill, $outline, $label);
         if ($z->{type} eq 'BULLISH') {
             $fill    = '#26a69a';
             $outline = '#089981';
+            $label   = 'BUY FVG';
         } else {
             $fill    = '#ef5350';
             $outline = '#f23645';
+            $label   = 'SELL FVG';
         }
 
         # Franja semitransparente (Tk/Tcl no soporta alpha real en canvas,
@@ -88,7 +90,7 @@ sub draw {
         if (($x2 - $x1) > 24) {
             $canvas->createText(
                 $x1 + 4, ($y1 + $y2) / 2,
-                -text   => 'FVG',
+                -text   => $label,
                 -fill   => $outline,
                 -font   => ['Arial', 7, 'bold'],
                 -anchor => 'w'

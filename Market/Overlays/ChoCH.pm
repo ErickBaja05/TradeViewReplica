@@ -60,7 +60,8 @@ sub draw {
         next if $ev->{index} < $start;
         next if defined $ev->{level_index} && $ev->{level_index} > $end;
 
-        my $color = $ev->{type} eq 'CHoCH_UP' ? '#ff9800' : '#ab47bc';
+        my $color = $ev->{type} eq 'CHoCH_UP' ? '#0f4b03' : '#6e0909';
+        my $text = $ev->{type} eq 'CHoCH_UP' ? 'CHoCH ^' : 'CHoCH v';
 
         my $x2 = $scale->index_to_center_x($ev->{index});
         $x2 = $right_limit if $x2 > $right_limit;
@@ -83,7 +84,7 @@ sub draw {
         $canvas->createText(
             $x2,
             $y + ($ev->{type} eq 'CHoCH_UP' ? -12 : 12),
-            -text   => 'CHoCH',
+            -text   => $text,
             -fill   => $color,
             -font   => ['Arial', 8, 'bold'],
             -anchor => 'center'

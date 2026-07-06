@@ -37,13 +37,13 @@ my @temporalidades = ('1m', '5m', '15m', '1h', '2h', '4h', '1d');
 my $tf_seleccionada = '1m';
 
 my $tf_menu = $control_panel->Optionmenu(
-    -options          => [ map { [$_, $_] } @temporalidades ],
+    -options          => \@temporalidades,
     -variable         => \$tf_seleccionada,
     -bg               => '#ffffff',
     -fg               => '#131722',
     -activebackground => '#75bbfd',
     -activeforeground => 'white',
-    -relief           => 'flat',
+    -relief           => 'raised',
     -cursor           => 'hand2',
     -command          => sub {
         my ($valor) = @_;
@@ -54,112 +54,51 @@ my $tf_menu = $control_panel->Optionmenu(
 # Espaciador estético intermedio
 $control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
 
-# --- CONTROLES DE LIQUIDEZ Y SMC (Smart Money Concepts) ---
-# Botones tipo "toggle" para mostrar/ocultar cada capa de análisis de forma independiente.
-my $liquidity_btn;
-$liquidity_btn = $control_panel->Button(
-    -text             => "Liquidez: ON",
+my $indicator_menu = $control_panel->Menubutton(
+    -text             => "Indicators",
     -bg               => '#ffffff',
-    -fg               => '#089981',
-    -activebackground => '#e0e0e0',
-    -activeforeground => '#089981',
-    -relief           => 'flat',
+    -fg               => '#131722',
+    -activebackground => '#75bbfd',
+    -activeforeground => 'white',
+    -relief           => 'raised',
     -cursor           => 'hand2',
-    -command          => sub {
-        return unless $chart_engine;
-        my $nuevo_estado = $chart_engine->{show_liquidity} ? 0 : 1;
-        $chart_engine->{show_liquidity} = $nuevo_estado;
-        $liquidity_btn->configure(
-            -text => $nuevo_estado ? "Liquidez: ON" : "Liquidez: OFF",
-            -fg   => $nuevo_estado ? '#089981' : '#b1b5be'
-        );
-        $chart_engine->request_render();
-    }
 )->pack(-side => 'left', -padx => 5);
 
-my $smc_btn;
-$smc_btn = $control_panel->Button(
-    -text             => "SMC: ON",
-    -bg               => '#ffffff',
-    -fg               => '#2962ff',
-    -activebackground => '#e0e0e0',
-    -activeforeground => '#2962ff',
-    -relief           => 'flat',
-    -cursor           => 'hand2',
-    -command          => sub {
-        return unless $chart_engine;
-        my $nuevo_estado = $chart_engine->{show_smc} ? 0 : 1;
-        $chart_engine->{show_smc} = $nuevo_estado;
-        $smc_btn->configure(
-            -text => $nuevo_estado ? "SMC: ON" : "SMC: OFF",
-            -fg   => $nuevo_estado ? '#2962ff' : '#b1b5be'
-        );
-        $chart_engine->request_render();
-    }
-)->pack(-side => 'left', -padx => 5);
+my $menu = $indicator_menu->Menu(-tearoff => 0);
+$indicator_menu->configure(-menu => $menu);
 
-my $choch_btn;
-$choch_btn = $control_panel->Button(
-    -text             => "ChoCH: ON",
-    -bg               => '#ffffff',
-    -fg               => '#ff9800',
-    -activebackground => '#e0e0e0',
-    -activeforeground => '#ff9800',
-    -relief           => 'flat',
-    -cursor           => 'hand2',
-    -command          => sub {
-        return unless $chart_engine;
-        my $nuevo_estado = $chart_engine->{show_choch} ? 0 : 1;
-        $chart_engine->{show_choch} = $nuevo_estado;
-        $choch_btn->configure(
-            -text => $nuevo_estado ? "ChoCH: ON" : "ChoCH: OFF",
-            -fg   => $nuevo_estado ? '#ff9800' : '#b1b5be'
-        );
-        $chart_engine->request_render();
-    }
-)->pack(-side => 'left', -padx => 5);
+my %vars = (
+    show_liquidity => 1,
+    show_smc       => 1,
+    show_choch     => 1,
+    show_fvg       => 1,
+    show_ob        => 1,
+);
 
-my $fvg_btn;
-$fvg_btn = $control_panel->Button(
-    -text             => "FVG: ON",
-    -bg               => '#ffffff',
-    -fg               => '#8e24aa',
-    -activebackground => '#e0e0e0',
-    -activeforeground => '#8e24aa',
-    -relief           => 'flat',
-    -cursor           => 'hand2',
-    -command          => sub {
-        return unless $chart_engine;
-        my $nuevo_estado = $chart_engine->{show_fvg} ? 0 : 1;
-        $chart_engine->{show_fvg} = $nuevo_estado;
-        $fvg_btn->configure(
-            -text => $nuevo_estado ? "FVG: ON" : "FVG: OFF",
-            -fg   => $nuevo_estado ? '#8e24aa' : '#b1b5be'
-        );
-        $chart_engine->request_render();
-    }
-)->pack(-side => 'left', -padx => 5);
+my @items = (
+    ["Liquidity",    "show_liquidity", "#089981"],
+    ["SMC",          "show_smc",       "#2962ff"],
+    ["ChoCH",        "show_choch",     "#0c3f02"],
+    ["FVG",          "show_fvg",       "#aa2424"],
+    ["Order Blocks", "show_ob",        "#ff9800"],
+);
 
-my $ob_btn;
-$ob_btn = $control_panel->Button(
-    -text             => "OB: ON",
-    -bg               => '#ffffff',
-    -fg               => '#6d4c41',
-    -activebackground => '#e0e0e0',
-    -activeforeground => '#6d4c41',
-    -relief           => 'flat',
-    -cursor           => 'hand2',
-    -command          => sub {
-        return unless $chart_engine;
-        my $nuevo_estado = $chart_engine->{show_ob} ? 0 : 1;
-        $chart_engine->{show_ob} = $nuevo_estado;
-        $ob_btn->configure(
-            -text => $nuevo_estado ? "OB: ON" : "OB: OFF",
-            -fg   => $nuevo_estado ? '#6d4c41' : '#b1b5be'
-        );
-        $chart_engine->request_render();
-    }
-)->pack(-side => 'left', -padx => 5);
+for my $item (@items) {
+    my ($label, $key, $color) = @$item;
+
+    $menu->checkbutton(
+        -label            => $label,
+        -variable         => \$vars{$key},
+        -foreground       => $color,
+        -activeforeground => $color,
+        -selectcolor      => $color,
+        -command          => sub {
+            return unless $chart_engine;
+            $chart_engine->{$key} = $vars{$key};
+            $chart_engine->request_render();
+        },
+    );
+}
 
 # Espaciador estético intermedio
 $control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);

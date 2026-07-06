@@ -66,13 +66,15 @@ sub draw {
         my $y1 = $scale->value_to_y($z->{top});
         my $y2 = $scale->value_to_y($z->{bottom});
 
-        my ($fill, $outline);
+        my ($fill, $outline, $label);
         if ($z->{type} eq 'BULLISH') {
             $fill    = '#2962ff';
             $outline = '#1e4fd6';
+            $label   = 'DEMAND ORDER BLOCK';
         } else {
             $fill    = '#ff9800';
             $outline = '#e65100';
+            $label   = 'SUPPLY ORDER BLOCK';
         }
 
         # Franja semitransparente (mismo truco de stipple usado para FVG,
@@ -88,7 +90,7 @@ sub draw {
         if (($x2 - $x1) > 24) {
             $canvas->createText(
                 $x1 + 4, ($y1 + $y2) / 2,
-                -text   => 'OB',
+                -text   => $label,
                 -fill   => $outline,
                 -font   => ['Arial', 7, 'bold'],
                 -anchor => 'w'
