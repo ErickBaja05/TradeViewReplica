@@ -54,6 +54,9 @@ my $tf_menu = $control_panel->Optionmenu(
 # Espaciador estético intermedio
 $control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
 
+my $indicator_label = $control_panel->Label(-text => "Indicadores:", -bg => '#fbfcf8', -fg => '#b1b5be', -font => 'Arial 10 bold')
+                             ->pack(-side => 'left', -padx => 10);
+
 my $indicator_menu = $control_panel->Menubutton(
     -text             => "Indicators",
     -bg               => '#ffffff',
@@ -68,17 +71,23 @@ my $menu = $indicator_menu->Menu(-tearoff => 0);
 $indicator_menu->configure(-menu => $menu);
 
 my %vars = (
-    show_liquidity => 1,
-    show_smc       => 1,
-    show_choch     => 1,
-    show_fvg       => 1,
-    show_ob        => 1,
+    show_liquidity    => 1,
+    show_smc          => 1,
+    show_choch        => 1,
+    show_bos          => 1,
+    show_lq_events    => 1,
+    show_swing        => 0,
+    show_fvg          => 1,
+    show_ob           => 1,
 );
 
 my @items = (
-    ["Liquidity",    "show_liquidity", "#089981"],
+    ["Liquidity",    "show_liquidity", "#0e5e50"],
     ["SMC",          "show_smc",       "#2962ff"],
-    ["ChoCH",        "show_choch",     "#0c3f02"],
+    ["ChoCH",        "show_choch",     "#3f0202"],
+    ["BOS",          "show_bos",       "#0c3f02"],
+    ["LQ_Events",    "show_lq_events", "#06023f"],
+    ["Swing",        "show_swing",     "#4d0a47"],
     ["FVG",          "show_fvg",       "#aa2424"],
     ["Order Blocks", "show_ob",        "#ff9800"],
 );

@@ -12,6 +12,9 @@ use Market::Indicators::OrderBlock;
 use Market::Overlays::Liquidity;
 use Market::Overlays::SMC_Structures;
 use Market::Overlays::ChoCH;
+use Market::Overlays::BOS;
+use Market::Overlays::LiquidityEvents;
+use Market::Overlays::Swing;
 use Market::Overlays::FVG;
 use Market::Overlays::OrderBlock;
 
@@ -55,6 +58,9 @@ sub new {
         show_liquidity    => 1,
         show_smc          => 1,
         show_choch        => 1,
+        show_bos          => 1,
+        show_lq_events    => 1,
+        show_swing        => 0,
         show_fvg          => 1,
         show_ob           => 1,
         smc_cache_key     => undef,
@@ -64,8 +70,16 @@ sub new {
             minor_atr_mult => 1.5,
             confirm_bars   => 3,
         ),
+        # Estructura EXTERNA (BOS/CHoCH externos), calculada sobre los
+        # pivotes estructurales (tier "structural").
         smc_engine        => Market::Indicators::SMC_Structures->new(
             choch_atr_mult => 2.0,
+        ),
+        # Estructura INTERNA (BOS/CHoCH internos), calculada sobre los
+        # pivotes "minor" (swing points de menor grado). Usa un múltiplo de
+        # ATR menor para que el CHoCH interno sea alcanzable a esa escala.
+        smc_internal_engine => Market::Indicators::SMC_Structures->new(
+            choch_atr_mult => 0.5,
         ),
         fvg_engine        => Market::Indicators::FVG->new(
             min_gap_atr_mult => 0.05,
@@ -74,11 +88,14 @@ sub new {
             impulse_atr_mult => 1.5,
             max_lookback      => 15,
         ),
-        liquidity_overlay => Market::Overlays::Liquidity->new(),
-        smc_overlay       => Market::Overlays::SMC_Structures->new(),
-        choch_overlay     => Market::Overlays::ChoCH->new(),
-        fvg_overlay       => Market::Overlays::FVG->new(),
-        ob_overlay        => Market::Overlays::OrderBlock->new(),
+        liquidity_overlay        => Market::Overlays::Liquidity->new(),
+        smc_overlay              => Market::Overlays::SMC_Structures->new(),
+        choch_overlay            => Market::Overlays::ChoCH->new(),
+        bos_overlay              => Market::Overlays::BOS->new(),
+        liquidity_events_overlay => Market::Overlays::LiquidityEvents->new(),
+        swing_overlay            => Market::Overlays::Swing->new(),
+        fvg_overlay              => Market::Overlays::FVG->new(),
+        ob_overlay               => Market::Overlays::OrderBlock->new(),
     };
 
     bless $self, $class;
@@ -159,7 +176,9 @@ sub render {
     # --- Capas de Liquidez, SMC, ChoCH, FVG y Order Blocks ---
     # Se dibujan sobre el canvas de precios, apoyándose en la misma escala
     # ($self->{price_panel}->{scale}) que ya fue calculada por PricePanel::render().
-    if ($self->{show_liquidity} || $self->{show_smc} || $self->{show_choch} || $self->{show_fvg} || $self->{show_ob}) {
+    if ($self->{show_liquidity} || $self->{show_smc} || $self->{show_choch} 
+     || $self->{show_fvg} || $self->{show_ob} || $self->{show_bos} 
+     || $self->{show_lq_events} || $self->{show_swing}) {
         $self->update_smc_overlay($self->{market_data}->last_index());
 
         my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
@@ -181,6 +200,15 @@ sub render {
 
             $self->{choch_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
                 if $self->{show_choch};
+            
+            $self->{bos_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_bos};
+
+            $self->{swing_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_swing};
+
+            $self->{liquidity_events_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_lq_events};
         }
     }
 
@@ -245,6 +273,12 @@ sub update_smc_overlay {
     $self->{choch_overlay}->set_result($smc_result);
     $self->{fvg_overlay}->set_result($fvg_result);
     $self->{ob_overlay}->set_result($ob_result);
+
+    $self->{bos_overlay}->set_result($smc_result);
+    $self->{liquidity_events_overlay}->set_result($liq_result);
+    $self->{swing_overlay}->set_result($liq_result);
+
+
     $self->{smc_cache_key} = $cache_key;
 }
 
@@ -516,79 +550,257 @@ sub bind_events {
     $mw->Tk::bind('<Key-R>', sub { $self->reset_view(); });
 }
 
+# =============================================================================
+# compute_intraday_labels  —  Orquestador principal del eje de tiempo
+#
+# Arquitectura:
+#   1. find_pivot_labels()      → etiquetas "ancla" (cambios de día)
+#   2. fill_between_pivots()    → etiquetas horarias entre cada par de pivotes
+#   3. remove_overlaps()        → filtro final anti-solapamiento
+# =============================================================================
 sub compute_intraday_labels {
+    my ($self) = @_;
+
+    my $pivots  = $self->find_pivot_labels();
+    my $labels  = $self->fill_between_pivots($pivots);
+    $labels     = $self->remove_overlaps($labels);
+
+    return $labels;
+}
+
+# -----------------------------------------------------------------------------
+# find_pivot_labels()
+#
+# Recorre las velas visibles y devuelve una etiqueta "ancla" por cada
+# cambio de día detectado.  Resultado: type => 'day'.
+# -----------------------------------------------------------------------------
+sub find_pivot_labels {
     my ($self) = @_;
     my ($start, $end) = $self->compute_window();
     my $velas = $self->{market_data}->get_data();
-    my @etiquetas_visibles;
 
-    my $visibles = $self->{visible_bars};
-    my $salto = 1;
-    $salto = 5  if $visibles > 30;
-    $salto = 10 if $visibles > 100;
-    $salto = 50 if $visibles > 500;
+    my @pivots;
+    my $ultimo_dia = "";
 
-    my $ultimo_dia_visto = "";
-    my %cambios_de_dia;
-
-    # FASE 1: Identificar índices absolutos donde cambia el día
-    for my $i ($start .. $end) {
-        my $vela = $velas->[$i];
-        last unless $vela;
-        my $ts = $vela->{time} || "";
-        my ($dia_actual) = $ts =~ /^(\d{4}-\d{2}-\d{2})/;
-        $dia_actual //= "";
-
-        if ($dia_actual ne $ultimo_dia_visto && $ultimo_dia_visto ne "") {
-            $cambios_de_dia{$i} = 1;
-        }
-        $ultimo_dia_visto = $dia_actual if $dia_actual;
-    }
-
-    $ultimo_dia_visto = "";
-    
-    # FASE 2: Construir etiquetas ancladas a la vela real (Permite paneo fluido)
-    for my $i ($start .. $end) {
-        my $vela = $velas->[$i];
-        last unless $vela;
-        my $ts = $vela->{time} || "";
-        my ($dia_actual) = $ts =~ /^(\d{4}-\d{2}-\d{2})/;
-        $dia_actual //= "";
-        $ultimo_dia_visto = $dia_actual if $dia_actual;
-
-        # Si es un cambio de día, lo dibujamos siempre (en negrita en el PricePanel)
-        if ($cambios_de_dia{$i}) {
-            push @etiquetas_visibles, {
-                indice_relativo => $i - $start, 
-                timestamp       => $ts,
-                es_cambio_dia   => 1
+    # Incluimos un pivote sintético al inicio de la ventana para que
+    # fill_between_pivots() pueda rellenar desde el borde izquierdo.
+    {
+        my $primera = $velas->[$start];
+        if ($primera) {
+            push @pivots, {
+                indice_absoluto => $start,
+                indice_relativo => 0,
+                timestamp       => $primera->{time} // "",
+                type            => 'start',   # marcador interno, no se dibuja
             };
-        } 
-        # Si es una etiqueta normal de minutos
-        elsif ($i % $salto == 0) {
-            # Evitar solapamiento: No dibujar si hay un cambio de día muy cerca
-            my $colision = 0;
-            my $tolerancia = int($salto * 0.25); # 25% de tolerancia de colisión
-            $tolerancia = 1 if $tolerancia < 1;
-            
-            for my $j ($i - $tolerancia .. $i + $tolerancia) {
-                if ($cambios_de_dia{$j}) {
-                    $colision = 1;
-                    last;
-                }
-            }
-
-            if (!$colision) {
-                push @etiquetas_visibles, {
-                    indice_relativo => $i - $start, 
-                    timestamp       => $ts,
-                    es_cambio_dia   => 0
-                };
-            }
+            ($ultimo_dia) = ($primera->{time} // "") =~ /^(\d{4}-\d{2}-\d{2})/;
+            $ultimo_dia //= "";
         }
     }
 
-    return \@etiquetas_visibles;
+    for my $i ($start + 1 .. $end) {
+        my $vela = $velas->[$i];
+        next unless $vela;
+        my $ts = $vela->{time} // "";
+        my ($dia) = $ts =~ /^(\d{4}-\d{2}-\d{2})/;
+        $dia //= "";
+
+        if ($dia ne $ultimo_dia && $ultimo_dia ne "") {
+            push @pivots, {
+                indice_absoluto => $i,
+                indice_relativo => $i - $start,
+                timestamp       => $ts,
+                type            => 'day',
+            };
+        }
+        $ultimo_dia = $dia if $dia;
+    }
+
+    # Pivote sintético al final para cerrar el último intervalo
+    {
+        my $ultima = $velas->[$end];
+        if ($ultima) {
+            push @pivots, {
+                indice_absoluto => $end,
+                indice_relativo => $end - $start,
+                timestamp       => $ultima->{time} // "",
+                type            => 'end',    # marcador interno, no se dibuja
+            };
+        }
+    }
+
+    return \@pivots;
+}
+
+# -----------------------------------------------------------------------------
+# fill_between_pivots(\@pivots)
+#
+# Para cada par de pivotes consecutivos:
+#   1. Mide el espacio en píxeles disponible entre ellos.
+#   2. Elige el intervalo de minutos más "bonito" que quepa sin saturar.
+#   3. Genera etiquetas horarias (type => 'hour') en los timestamps exactos.
+# Devuelve la lista completa (pivotes dibujables + relleno), ordenada por x.
+# -----------------------------------------------------------------------------
+sub fill_between_pivots {
+    my ($self, $pivots) = @_;
+    return [] unless $pivots && @$pivots >= 2;
+
+    my ($start, $end) = $self->compute_window();
+    my $velas         = $self->{market_data}->get_data();
+    my $scale         = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
+
+    # Sin escala todavía (primer render) devolvemos sólo los pivotes reales
+    unless ($scale) {
+        return [ grep { $_->{type} eq 'day' } @$pivots ];
+    }
+
+    # Pasos "bonitos" en minutos
+    my @steps = (1, 2, 4, 5, 6, 8, 10, 12, 15, 20, 30, 60, 120, 240, 480);
+
+    # Espacio mínimo entre etiquetas en píxeles (evita solapamiento visual)
+    my $min_spacing = 10;
+
+    my @result;
+
+    for my $k (0 .. $#$pivots - 1) {
+        my $p1 = $pivots->[$k];
+        my $p2 = $pivots->[$k + 1];
+
+        # Añadir el pivote p1 si es dibujable (day)
+        push @result, $p1 if $p1->{type} eq 'day';
+
+        my $x1 = $scale->index_to_center_x($p1->{indice_absoluto});
+        my $x2 = $scale->index_to_center_x($p2->{indice_absoluto});
+        my $pixel_distance = $x2 - $x1;
+
+        next if $pixel_distance <= 0;
+
+        # ¿Cuántas etiquetas intermedias caben?
+        my $max_labels = int($pixel_distance / $min_spacing);
+        next if $max_labels < 1;
+
+        # Elegir el menor paso que produzca <= max_labels etiquetas
+        # Para estimarlo necesitamos cuántos minutos hay entre los pivotes.
+        my $ts1 = $p1->{timestamp};
+        my $ts2 = $p2->{timestamp};
+        my $minutos_span = $self->_ts_diff_minutes($ts1, $ts2);
+        next if $minutos_span <= 0;
+
+        my $chosen_step = undef;
+        for my $step (@steps) {
+            my $estimated = int($minutos_span / $step);
+            if ($estimated <= $max_labels) {
+                $chosen_step = $step;
+                last;
+            }
+        }
+        next unless defined $chosen_step;
+
+        # Generar etiquetas intermedias recorriendo las velas del intervalo
+        for my $i ($p1->{indice_absoluto} + 1 .. $p2->{indice_absoluto} - 1) {
+            my $vela = $velas->[$i];
+            next unless $vela;
+            my $ts = $vela->{time} // "";
+
+            # Extraer hora y minuto
+            my ($h, $m) = $ts =~ /[T ](\d{2}):(\d{2})/;
+            next unless defined $h && defined $m;
+
+            my $total_min = $h * 60 + $m;
+
+            # ¿Cae exactamente en un múltiplo del paso elegido?
+            next unless $total_min % $chosen_step == 0;
+
+            push @result, {
+                indice_absoluto => $i,
+                indice_relativo => $i - $start,
+                timestamp       => $ts,
+                type            => 'hour',
+            };
+        }
+    }
+
+    # Añadir el último pivote si es dibujable
+    my $last = $pivots->[-1];
+    push @result, $last if $last && $last->{type} eq 'day';
+
+    # Ordenar por posición
+    @result = sort { $a->{indice_absoluto} <=> $b->{indice_absoluto} } @result;
+
+    return \@result;
+}
+
+# -----------------------------------------------------------------------------
+# remove_overlaps(\@labels)
+#
+# Descarta etiquetas cuya posición X esté demasiado cerca de la anterior.
+# La anchura de cada texto se estima como: caracteres × 8 px + margen 12 px.
+# Los pivotes 'day' tienen prioridad: si colisionan con una 'hour' anterior,
+# es la 'hour' la que se elimina (ya se hizo).  Si colisionan entre sí,
+# se mantiene la primera que apareció.
+# -----------------------------------------------------------------------------
+sub remove_overlaps {
+    my ($self, $labels) = @_;
+    return $labels unless $labels && @$labels;
+
+    my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
+    return $labels unless $scale;
+
+    my @kept;
+    my $last_x_right = -9999;   # borde derecho de la última etiqueta aceptada
+
+    for my $lbl (@$labels) {
+        my $x = $scale->index_to_center_x($lbl->{indice_absoluto});
+
+        # Estimar anchura del texto
+        my $text  = $lbl->{timestamp} // "";
+        my $chars = length($text) > 0 ? length($text) : 5;
+        my $ancho = $chars * 8 + 12;     # 8 px/carácter + 12 px de margen
+        my $x_left  = $x - int($ancho / 2);
+        my $x_right = $x + int($ancho / 2);
+
+        if ($x_left > $last_x_right) {
+            push @kept, $lbl;
+            $last_x_right = $x_right;
+        }
+        # Si colisiona pero es 'day', reemplaza la anterior si ésta era 'hour'
+        elsif ($lbl->{type} eq 'day' && @kept && $kept[-1]{type} eq 'hour') {
+            pop @kept;
+            push @kept, $lbl;
+            $last_x_right = $x_right;
+        }
+        # En cualquier otro caso de colisión se descarta silenciosamente
+    }
+
+    return \@kept;
+}
+
+# -----------------------------------------------------------------------------
+# _ts_diff_minutes($ts1, $ts2)
+#
+# Diferencia en minutos entre dos timestamps ISO-8601 / "YYYY-MM-DD HH:MM".
+# Solo toma en cuenta hora y minuto dentro del mismo día para rapidez;
+# si cruzan medianoche devuelve la suma de minutos restantes + los del nuevo.
+# Para el propósito de elegir el step esto es suficientemente preciso.
+# -----------------------------------------------------------------------------
+sub _ts_diff_minutes {
+    my ($self, $ts1, $ts2) = @_;
+
+    my ($d1, $h1, $m1) = $ts1 =~ /(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})/;
+    my ($d2, $h2, $m2) = $ts2 =~ /(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})/;
+
+    return 0 unless defined $h1 && defined $h2;
+
+    my $min1 = $h1 * 60 + $m1;
+    my $min2 = $h2 * 60 + $m2;
+
+    if ($d1 eq $d2) {
+        return abs($min2 - $min1);
+    }
+    else {
+        # Cruza medianoche: minutos restantes del día 1 + minutos del día 2
+        return (1440 - $min1) + $min2;
+    }
 }
 
 sub vertical_zoom {

@@ -54,7 +54,7 @@ sub calculate {
 
         my $event;
         my $break_size = 0;
-        my $choch_level; # nivel (pivot previo) roto por un CHoCH, si aplica
+        my ($choch_level, $bos_level); # nivel (pivot previo) roto por un CHoCH, si aplica
 
         my $atr = $pivot->{atr} // 0;
         my $min_break = $atr * $self->{choch_atr_mult};
@@ -78,6 +78,12 @@ sub calculate {
                     : 'BOS_UP';
 
                 $pending_choch = undef;
+                $bos_level = $external_high;
+
+                $event = defined $pending_choch && $pending_choch->{direction} eq 'UP'
+                ? 'BOS_UP_CONFIRM'
+                : 'BOS_UP';
+
                 $external_high = $pivot;
             }
 
@@ -110,6 +116,12 @@ sub calculate {
                     : 'BOS_DOWN';
 
                 $pending_choch = undef;
+                $bos_level = $external_low;
+
+                $event = defined $pending_choch && $pending_choch->{direction} eq 'DOWN'
+                ? 'BOS_DOWN_CONFIRM'
+                : 'BOS_DOWN';
+
                 $external_low = $pivot;
             }
 
@@ -150,6 +162,11 @@ sub calculate {
             if (defined $choch_level) {
                 $evento{level_index} = $choch_level->{index};
                 $evento{level_price} = $choch_level->{price};
+            }
+
+            if (defined $bos_level) {
+                $evento{level_index} = $bos_level->{index};
+                $evento{level_price} = $bos_level->{price};
             }
 
             push @{$self->{events}}, \%evento;
