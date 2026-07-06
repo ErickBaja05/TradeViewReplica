@@ -136,7 +136,7 @@ sub _draw_y_scale {
         }
 
         # Cuadrícula horizontal en el lienzo de las velas
-        $canvas->createLine(0, $y, $plot_width, $y, -fill => $grid_color, -dash => '.');
+        #$canvas->createLine(0, $y, $plot_width, $y, -fill => $grid_color, -dash => '.');
 
         # Los números se envían exclusivamente al lienzo lateral que armamos (si existe)
         if ($axis_canvas) {

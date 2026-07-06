@@ -654,11 +654,18 @@ sub fill_between_pivots {
         return [ grep { $_->{type} eq 'day' } @$pivots ];
     }
 
+    my $has_day = grep { $_->{type} eq 'day' } @$pivots;
+
+    unless ($has_day) {
+        $pivots->[0]{type}  = 'hour';
+        $pivots->[-1]{type} = 'hour';
+    }
+
     # Pasos "bonitos" en minutos
-    my @steps = (1, 2, 4, 5, 6, 8, 10, 12, 15, 20, 30, 60, 120, 240, 480);
+    my @steps = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20, 30, 60, 120, 240, 480);
 
     # Espacio mínimo entre etiquetas en píxeles (evita solapamiento visual)
-    my $min_spacing = 10;
+    my $min_spacing = 1;
 
     my @result;
 
@@ -667,7 +674,7 @@ sub fill_between_pivots {
         my $p2 = $pivots->[$k + 1];
 
         # Añadir el pivote p1 si es dibujable (day)
-        push @result, $p1 if $p1->{type} eq 'day';
+        push @result, $p1 if $p1->{type} ne 'start';
 
         my $x1 = $scale->index_to_center_x($p1->{indice_absoluto});
         my $x2 = $scale->index_to_center_x($p2->{indice_absoluto});
@@ -722,7 +729,7 @@ sub fill_between_pivots {
 
     # Añadir el último pivote si es dibujable
     my $last = $pivots->[-1];
-    push @result, $last if $last && $last->{type} eq 'day';
+    push @result, $last if $last && $last->{type} ne 'end';
 
     # Ordenar por posición
     @result = sort { $a->{indice_absoluto} <=> $b->{indice_absoluto} } @result;
