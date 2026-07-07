@@ -1,30 +1,27 @@
 use strict;
 use warnings;
 use FindBin;
-use lib "$FindBin::Bin"; 
+use lib "$FindBin::Bin"; # Permite a Perl buscar los módulos locales en el directorio de ejecución
 
 use Tk;
-use Tk::BrowseEntry; # Para el menú desplegable (Drop-down)
 use Market::MarketData;
 use Market::IndicatorManager;
 use Market::ChartEngine;
 use Market::Indicators::ATR;
-use Market::Indicators::Liquidity;
-use Market::Indicators::SMC_Structures;
-use Market::Overlays::Liquidity;
-use Market::Overlays::SMC_Structures;
+use Market::UI::Callbacks;
+use Market::UI::ReplayPanel;
+
+# =========================================================================
+#   FASES DE EJECUCIÓN CENTRAL (MARKET.PL)
+# =========================================================================
 
 my $mw = MainWindow->new();
-$mw->title("Replica Financiera TradingView - EPN (Fase 2)");
+$mw->title("Replica Financiera TradingView - EPN");
 
 my $width  = $mw->screenwidth;
 my $height = $mw->screenheight;
-$mw->geometry("${width}x${height}+0+0");
 
-# Declaración adelantada
-my $chart_engine;
-my $liquidity_overlay;
-my $smc_overlay;
+$mw->geometry("${width}x${height}+0+0");
 
 # --- BARRA SUPERIOR DE CONTROL DE INTERFAZ ---
 my $control_panel = $mw->Frame(-bg => '#fbfcf8', -relief => 'raised', -bd => 1)
@@ -114,271 +111,209 @@ for my $item (@items) {
     );
 }
 
-$control_panel->Label(
-    -text => " | ",
-    -bg   => '#fbfcf8',
-    -fg   => '#d1d4dc'
-)->pack(-side => 'left', -padx => 10);
+# Espaciador estético intermedio
+$control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
 
-# Botones de Vista Originales
+# Botón dinámico para conmutar el Modo de Escala (Auto / Manual)
 my $scale_btn;
 $scale_btn = $control_panel->Button(
-    -text    => "Escala: Auto",
-    -bg      => '#ffffff',
-    -fg      => '#75bbfd',
-    -relief  => 'flat',
-    -cursor  => 'hand2',
-    -command => sub {
+    -text             => "Escala: Auto",
+    -bg               => '#ffffff',
+    -fg               => '#75bbfd',
+    -activebackground => '#e0e0e0',
+    -activeforeground => '#3bb3e4',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -command          => sub {
         return unless $chart_engine;
+        # Solo le decimos al motor que invierta la escala, él se encarga del resto
         my $nuevo_modo = $chart_engine->{auto_scale} ? 0 : 1;
         $chart_engine->set_auto_scale($nuevo_modo);
         $chart_engine->request_render();
     }
 )->pack(-side => 'left', -padx => 5);
 
+# Botón para restablecer los parámetros visuales (Reset View)
 $control_panel->Button(
-    -text    => "Restablecer Vista (R)",
-    -bg      => '#ffffff',
-    -fg      => '#131722',
-    -relief  => 'flat',
-    -cursor  => 'hand2',
-    -command => sub {
+    -text             => "Restablecer Vista (R)",
+    -bg               => '#ffffff',
+    -fg               => '#131722',
+    -activebackground => '#ff4a4a',
+    -activeforeground => 'white',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -command          => sub {
         return unless $chart_engine;
         $chart_engine->reset_view();
+        # Sincronizamos el texto del botón de escala al volver a modo automático
         $scale_btn->configure(-text => "Escala: Auto", -fg => '#3bb3e4');
     }
 )->pack(-side => 'left', -padx => 10);
 
-$control_panel->Label(
-    -text => " | CONTROLES REPLAY: ",
-    -bg   => '#fbfcf8',
-    -fg   => '#ff9800',
-    -font => 'Arial 10 bold'
-)->pack(-side => 'left', -padx => 10);
+# Separador y botón Replay
+$control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
 
-# 2. Controles de la Máquina Replay
-$control_panel->Button(
-    -text    => "Activar/Salir",
-    -bg      => '#ffe0b2',
-    -command => sub { $chart_engine->toggle_replay_mode() if $chart_engine; }
-)->pack(-side => 'left', -padx => 2);
+my $replay_on          = 0;
+my $replay_select_mode = 0;
+my $replay_watermark_on = 1;
+my $replay_panel;
 
-$control_panel->Button(
-    -text    => "⏮ Step Bwd",
-    -bg      => '#e0e0e0',
-    -command => sub { $chart_engine->step_backward() if $chart_engine; }
-)->pack(-side => 'left', -padx => 2);
-
-$control_panel->Button(
-    -text    => "▶ Play",
-    -bg      => '#c8e6c9',
-    -command => sub { $chart_engine->play_replay() if $chart_engine; }
-)->pack(-side => 'left', -padx => 2);
-
-$control_panel->Button(
-    -text    => "⏸ Pause",
-    -bg      => '#ffcdd2',
-    -command => sub { $chart_engine->pause_replay() if $chart_engine; }
-)->pack(-side => 'left', -padx => 2);
-
-$control_panel->Button(
-    -text    => "Step Fwd ⏭",
-    -bg      => '#e0e0e0',
-    -command => sub { $chart_engine->step_forward() if $chart_engine; }
-)->pack(-side => 'left', -padx => 2);
+my $replay_btn = $control_panel->Button(
+    -text             => "Replay",
+    -bg               => '#ffffff',
+    -fg               => '#2962ff',
+    -activebackground => '#e8f0fe',
+    -activeforeground => '#1a3c9e',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -command          => sub {
+        return unless $chart_engine;
+        # Activate replay select mode (scissors)
+        my $cb_activate = Market::UI::Callbacks->make_replay_activate(
+            $chart_engine,
+            {
+                replay_on          => \$replay_on,
+                replay_select_mode => \$replay_select_mode,
+                replay_watermark_on => \$replay_watermark_on,
+                replay_panel       => \$replay_panel,
+                mw                 => $mw,
+                show_replay_tab    => sub { },
+                show_default_tab   => sub { },
+            }
+        );
+        $cb_activate->();
+    },
+)->pack(-side => 'left', -padx => 5);
 
 
-# --- ESTRUCTURA MODULAR DE CONTENEDORES ---
-my $price_frame = $mw->Frame(-bg => '#fbfcf8')
-                     ->pack(-side => 'top', -fill => 'both', -expand => 1);
+# --- ESTRUCTURA MODULAR DE CONTENEDORES PARA EVITAR DEFORMACIÓN ---
 
-my $price_main_row = $price_frame->Frame(-bg => '#fbfcf8')
-                                 ->pack(-side => 'top', -fill => 'both', -expand => 1);
+# A. PANEL PRINCIPAL DE PRECIOS Y VELAS
+my $price_frame = $mw->Frame(-bg => '#fbfcf8')->pack(-side => 'top', -fill => 'both', -expand => 1);
 
-my $price_axis_canvas = $price_main_row->Canvas(
-    -bg                 => '#fbfcf8',
-    -width              => 75,
-    -highlightthickness => 0
-)->pack(-side => 'right', -fill => 'y');
+my $price_main_row = $price_frame->Frame(-bg => '#fbfcf8')->pack(-side => 'top', -fill => 'both', -expand => 1);
 
-my $price_canvas = $price_main_row->Canvas(
-    -bg                 => '#fbfcf8',
-    -highlightthickness => 0
-)->pack(-side => 'left', -fill => 'both', -expand => 1);
+# ¡EL TRUCO TK! Empaquetamos PRIMERO el eje vertical (fijo a la derecha)
+my $price_axis_canvas = $price_main_row->Canvas(-bg => '#fbfcf8', -width => 75, -highlightthickness => 0)
+                                       ->pack(-side => 'right', -fill => 'y');
 
-my $time_axis_row = $price_frame->Frame(-bg => '#fbfcf8')
-                                ->pack(-side => 'top', -fill => 'x');
-
-my $price_corner = $time_axis_row->Canvas(
-    -bg                 => '#fbfcf8',
-    -width              => 75,
-    -height             => 25,
-    -highlightthickness => 0
-)->pack(-side => 'right');
-
-my $time_canvas = $time_axis_row->Canvas(
-    -bg                 => '#fbfcf8',
-    -height             => 25,
-    -highlightthickness => 0
-)->pack(-side => 'left', -fill => 'x', -expand => 1);
-
-my $atr_frame = $mw->Frame(
-    -bg     => '#fbfcf8',
-    -height => 160
-)->pack(-side => 'top', -fill => 'both', -expand => 0);
-
-my $atr_main_row = $atr_frame->Frame(-bg => '#fbfcf8')
-                             ->pack(-side => 'top', -fill => 'both', -expand => 1);
-
-my $atr_axis_canvas = $atr_main_row->Canvas(
-    -bg                 => '#fbfcf8',
-    -width              => 75,
-    -highlightthickness => 0
-)->pack(-side => 'right', -fill => 'y');
-
-my $atr_canvas = $atr_main_row->Canvas(
-    -bg                 => '#fbfcf8',
-    -highlightthickness => 0
-)->pack(-side => 'left', -fill => 'both', -expand => 1);
+# LUEGO empaquetamos las velas para que se expandan en el espacio sobrante
+my $price_canvas = $price_main_row->Canvas(-bg => '#fbfcf8', -highlightthickness => 0)
+                                  ->pack(-side => 'left', -fill => 'both', -expand => 1);
 
 
-# --- INSTANCIACIÓN ---
+# Fila inferior de Tiempos
+my $time_axis_row = $price_frame->Frame(-bg => '#fbfcf8')->pack(-side => 'top', -fill => 'x');
+
+# Empaquetamos PRIMERO la esquina muerta a la derecha
+my $price_corner = $time_axis_row->Canvas(-bg => '#fbfcf8', -width => 75, -height => 25, -highlightthickness => 0)
+                                 ->pack(-side => 'right');
+
+# LUEGO el eje del tiempo a la izquierda
+my $time_canvas = $time_axis_row->Canvas(-bg => '#fbfcf8', -height => 25, -highlightthickness => 0)
+                                ->pack(-side => 'left', -fill => 'x', -expand => 1);
+
+
+# B. PANEL INFERIOR DEL INDICADOR ATR
+my $atr_frame = $mw->Frame(-bg => '#fbfcf8', -height => 160)->pack(-side => 'top', -fill => 'both', -expand => 0);
+
+my $atr_main_row = $atr_frame->Frame(-bg => '#fbfcf8')->pack(-side => 'top', -fill => 'both', -expand => 1);
+
+# Empaquetamos PRIMERO el eje del ATR a la derecha
+my $atr_axis_canvas = $atr_main_row->Canvas(-bg => '#fbfcf8', -width => 75, -highlightthickness => 0)
+                                    ->pack(-side => 'right', -fill => 'y');
+
+# LUEGO el lienzo de la curva ATR a la izquierda
+my $atr_canvas = $atr_main_row->Canvas(-bg => '#fbfcf8', -highlightthickness => 0)
+                               ->pack(-side => 'left', -fill => 'both', -expand => 1);
+
+
+# 2. Instanciación e interconexión de las capas arquitectónicas
 my $market_data       = Market::MarketData->new();       
 my $indicator_manager = Market::IndicatorManager->new(); 
 
+# Capa 4: Aplicación (Orquestador Central - Inyectamos las nuevas referencias de ejes)
 $chart_engine = Market::ChartEngine->new(
     market_data       => $market_data,
     indicator_manager => $indicator_manager,
     price_canvas      => $price_canvas,
-    price_axis_canvas => $price_axis_canvas,
-    time_canvas       => $time_canvas,
+    price_axis_canvas => $price_axis_canvas, # Inyección del eje vertical de precios
+    time_canvas       => $time_canvas,       # Inyección del eje horizontal de tiempo
     atr_canvas        => $atr_canvas,
-    atr_axis_canvas   => $atr_axis_canvas,
-    widgets           => {
-        main_window => $mw,
-        scale_btn   => $scale_btn
-    }
+    atr_axis_canvas   => $atr_axis_canvas,   # Inyección del eje vertical de volatilidad
+    widgets           => { main_window => $mw, scale_btn => $scale_btn }
 );
 
 
-# --- INDICADORES ANALÍTICOS ---
+# 3. Tareas secuenciales requeridas por el documento de requerimientos
+my $archivo_csv = 'datos.csv';
+open(my $fh, '<', $archivo_csv) or die "No se pudo abrir el archivo '$archivo_csv' $!\n";
+my $encabezado = <$fh>;
+
 my $atr_real = Market::Indicators::ATR->new(14);
 $indicator_manager->register('ATR', $atr_real);
 
-# Indicador de Liquidez: detecta BSL, SSL, Sweeps, Grabs y Runs
-my $liquidity_real = Market::Indicators::Liquidity->new(
-    atr_period => 14,
-    k_depth    => 3
-);
-$indicator_manager->register('Liquidity', $liquidity_real);
-
-# Indicador SMC:
-# No se registra en IndicatorManager porque SMC_Structures usa update($candle_index),
-# mientras que IndicatorManager llama update_last($market_data).
-my $smc_real = Market::Indicators::SMC_Structures->new(
-    market_data      => $market_data,
-    liquidity_engine => $liquidity_real,
-    atr_indicator    => $atr_real,
-    settings         => {
-        recent_events_limit => 50,
-    }
-);
-
-
-# --- OVERLAYS VISUALES ---
-# Overlay de Liquidez: dibuja BSL, SSL y etiquetas de la máquina de estados
-$liquidity_overlay = Market::Overlays::Liquidity->new(
-    canvas => $price_canvas,
-    engine => $chart_engine
-);
-$chart_engine->add_overlay($liquidity_overlay);
-
-# Overlay SMC:
-# Para esta primera entrega se activa FVG + BOS/CHOCH.
-# Se desactivan HH/HL/LH/LL para evitar saturación visual y carga excesiva.
-$smc_overlay = Market::Overlays::SMC_Structures->new(
-    canvas           => $price_canvas,
-    engine           => $chart_engine,
-    smc_indicator    => $smc_real,
-
-    # Opciones visuales para Sprint 1
-    show_fvg         => 1,
-    show_structure   => 1,
-    show_swings      => 0,
-    max_swing_labels => 0,
-);
-$chart_engine->add_overlay($smc_overlay);
-
-
-
-# --- LECTURA DE DATOS OPTIMIZADA PARA LA PRESENTACIÓN ---
-my $archivo_csv = 'datos.csv';
-open(my $fh, '<', $archivo_csv) or die "No se pudo abrir el archivo '$archivo_csv' $!\n";
-
-my @todas_las_lineas = <$fh>;
-close($fh);
-
-my $limite_velas = 3000; # <--- Esto hace que cargue en 2 segundos en vez de 20 minutos
-my $inicio = scalar(@todas_las_lineas) > $limite_velas ? scalar(@todas_las_lineas) - $limite_velas : 1;
-
-for my $i ($inicio .. $#todas_las_lineas) {
-    my $linea = $todas_las_lineas[$i];
+while (my $linea = <$fh>) {
     chomp $linea;
-
     my ($time, $open, $high, $low, $close, $volume) = split(',', $linea);
     
     $market_data->add_candle({
-        time   => $time, open => 0.0 + $open, high => 0.0 + $high,
-        low    => 0.0 + $low, close => 0.0 + $close, volume => 0.0 + $volume
+        time   => $time,
+        open   => $open,
+        high   => $high,
+        low    => $low,
+        close  => $close,
+        volume => $volume
     });
-
     $indicator_manager->update_last($market_data);
-    
-    my $current_index = $market_data->last_index();
-    $smc_real->update($current_index) if defined $current_index && $current_index >= 0;
 }
+close($fh);
+print "Datos del CSV cargados exitosamente. Total de velas: " . $market_data->size() . "\n";
 
-# # --- LECTURA DE DATOS ---
-# my $archivo_csv = 'datos.csv';
-
-# open(my $fh, '<', $archivo_csv) or die "No se pudo abrir el archivo '$archivo_csv' $!\n";
-
-# my $encabezado = <$fh>;
-
-# while (my $linea = <$fh>) {
-#     chomp $linea;
-
-#     my ($time, $open, $high, $low, $close, $volume) = split(',', $linea);
-    
-#     $market_data->add_candle({
-#         time   => $time,
-#         open   => 0.0 + $open,
-#         high   => 0.0 + $high,
-#         low    => 0.0 + $low,
-#         close  => 0.0 + $close,
-#         volume => 0.0 + $volume
-#     });
-
-#     # Actualización incremental:
-#     # ATR y Liquidity necesitan actualizarse vela por vela para generar historial completo.
-#     $indicator_manager->update_last($market_data);
-
-#     # SMC se actualiza después de Liquidity porque consume eventos resueltos de liquidez.
-#     # Esto permite que FVG, BOS y CHOCH se vayan generando según avanza el historial.
-#     my $current_index = $market_data->last_index();
-#     $smc_real->update($current_index) if defined $current_index && $current_index >= 0;
-# }
-
-# close($fh);
-
-
-# Inicializamos temporalidades (aquí deberías agregar las lógicas de HTF luego)
 $market_data->build_timeframes();
+$indicator_manager->update_last($market_data);
+# ---------------------------------------------------------------------
 
-
-# Inicialización gráfica
+# Inicialización y renderizado del entorno visual
 $chart_engine->bind_all_canvas();
 $chart_engine->bind_events();
+
+# --- Wire Replay mode ---
+my %ui_vars = (
+    replay_on          => \$replay_on,
+    replay_select_mode => \$replay_select_mode,
+    replay_watermark_on => \$replay_watermark_on,
+    replay_panel       => \$replay_panel,
+    mw                 => $mw,
+    show_replay_tab    => sub { },   # no tabs in ProyectoA — panel is always visible
+    show_default_tab   => sub { },
+    replay_select_mode_callback => sub { $replay_select_mode = $_[0] ? 1 : 0 },
+);
+
+$chart_engine->{replay_watermark_on_ref} = \$replay_watermark_on;
+$chart_engine->{replay_on_ref}           = \$replay_on;
+
+# Callback: cuando el usuario hace click en una vela en modo Select Bar
+$chart_engine->{replay_bar_selected_callback} = sub {
+    Market::UI::Callbacks->replay_confirm_bar_selection($chart_engine, \%ui_vars);
+};
+$chart_engine->{replay_select_mode_callback} = sub {
+    $replay_select_mode = $_[0] ? 1 : 0;
+};
+
+# Replay panel (toolbar inline sobre el canvas de precios)
+$replay_panel = Market::UI::ReplayPanel->new(
+    parent    => $price_frame,
+    chart     => $chart_engine,
+    ui_vars   => \%ui_vars,
+    mw        => $mw,
+    root      => $mw,
+    menu_parent => $mw,
+    inline    => 1,
+);
+
+$chart_engine->bind_replay_window_shortcuts($mw);
 $chart_engine->render();
 
+# 4. Lanzamiento del ciclo principal de escucha de eventos de la interfaz
 MainLoop;

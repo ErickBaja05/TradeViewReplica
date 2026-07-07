@@ -93,7 +93,6 @@ sub set_scale {
     );
     return $self->{scale};
 }
-
 sub render {
     my ($self, $data_slice) = @_;
     return unless $data_slice && scalar(@$data_slice) > 0;
@@ -204,19 +203,9 @@ sub draw_crosshair {
 
 sub render_last_visible_value {
     my ($self, $data_slice, $scale, $atr_values) = @_;
-    
-    return unless $data_slice && scalar(@$data_slice) > 0;
 
-    # 1. Obtenemos el inicio de la ventana que calculó el motor
     my ($start_index, $end_index) = $self->{engine}->compute_window();
-    
-    # ¡LA MAGIA DE LA CORRECCIÓN!
-    # En lugar de usar $end_index a ciegas (que puede ser un índice en el futuro),
-    # calculamos el índice real garantizado sumando el tamaño del slice filtrado.
-    my $real_last_index = $start_index + scalar(@$data_slice) - 1;
-    
-    # 2. Ahora sí extraemos el último valor de volatilidad válido
-    my $last_atr_val = $atr_values->[$real_last_index];
+    my $last_atr_val = $atr_values->[$end_index];
     return unless defined $last_atr_val;
 
     my $y = $scale->value_to_y($last_atr_val);
@@ -229,15 +218,14 @@ sub render_last_visible_value {
     # Etiqueta en el canvas del eje lateral exclusivo
     my $axis_cv = $self->{engine}->{atr_axis_canvas};
     if ($axis_cv) {
-        my $valor_fmt = sprintf("%.4f", $last_atr_val);
-        
+        my $valor_fmt = sprintf("%.4f", $last_atr_val); 
         my $txt_id = $axis_cv->createText(
             37, $y,
             -text => $valor_fmt,
             -fill => '#ffffff',
             -font => ['Helvetica', 10, 'bold']
         );
-        
+
         my @bbox = $axis_cv->bbox($txt_id);
         if (@bbox) {
             my $bg_id = $axis_cv->createRectangle(
@@ -249,5 +237,4 @@ sub render_last_visible_value {
         }
     }
 }
-
 1;

@@ -17,6 +17,8 @@ use Market::Overlays::LiquidityEvents;
 use Market::Overlays::Swing;
 use Market::Overlays::FVG;
 use Market::Overlays::OrderBlock;
+use Market::ReplayController;
+use Market::Panels::Scales;
 
 =head1 NOMBRE
 Market::ChartEngine - Motor gráfico central y orquestador de la interfaz.
@@ -96,9 +98,19 @@ sub new {
         swing_overlay            => Market::Overlays::Swing->new(),
         fvg_overlay              => Market::Overlays::FVG->new(),
         ob_overlay               => Market::Overlays::OrderBlock->new(),
+
+        # --- Replay mode state (ported from ProyectoB) ---
+        _replay_select_mode      => 0,
+        _selected_bar            => undef,
+        replay_keyboard_callbacks => {},
     };
 
     bless $self, $class;
+
+    # Replay controller
+    $self->{replay_controller} = Market::ReplayController->new(
+        market_data => $self->{market_data},
+    );
 
     $self->{price_panel} = Market::Panels::PricePanel->new(
         canvas => $self->{price_canvas},
@@ -125,7 +137,12 @@ sub compute_window {
 
     return (0, 0) if $total_candles == 0;
 
-    my $end_index = $total_candles - 1 - $self->{offset};
+    # Replay: limit visible data to replay_idx
+    my $replay = $self->{replay_controller};
+    my $last_index = $total_candles - 1;
+    my $effective_end = $replay ? $replay->effective_end($last_index) : $last_index;
+
+    my $end_index = $effective_end - $self->{offset};
     my $start_index = $end_index - $self->{visible_bars} + 1;
 
     $start_index = 0 if $start_index < 0;
@@ -179,7 +196,15 @@ sub render {
     if ($self->{show_liquidity} || $self->{show_smc} || $self->{show_choch} 
      || $self->{show_fvg} || $self->{show_ob} || $self->{show_bos} 
      || $self->{show_lq_events} || $self->{show_swing}) {
-        $self->update_smc_overlay($self->{market_data}->last_index());
+        my $replay_ctl = $self->{replay_controller};
+        my $feed_to = $self->{market_data}->last_index();
+        if ($replay_ctl && $replay_ctl->is_active()) {
+            my $ridx = $replay_ctl->current_index();
+            $feed_to = $ridx if defined $ridx && $ridx < $feed_to;
+        }
+        $self->update_smc_overlay($feed_to);
+        # Draw replay watermark if active
+        $self->_draw_replay_watermark($self->{price_canvas});
 
         my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
 
@@ -212,7 +237,13 @@ sub render {
         }
     }
 
-    if (defined $self->{crosshair_x} && defined $self->{crosshair_y}) {
+    if ($self->{_replay_select_mode} && defined $self->{last_mouse_x}) {
+        $self->_draw_replay_select_hover(undef, $self->{last_mouse_x}, $self->{last_mouse_y});
+    } elsif (!$self->_replay_session_active()) {
+        $self->_purge_replay_visuals();
+    }
+
+    if (defined $self->{crosshair_x} && defined $self->{crosshair_y} && !$self->{_replay_select_mode}) {
         $self->draw_crosshair_all(
             $self->{crosshair_x}, 
             $self->{crosshair_y}, 
@@ -347,6 +378,22 @@ sub bind_all_canvas {
         $canvas->Tk::bind('<Button-1>', sub {
             my $widget = shift; my $e = $widget->XEvent;
             if ($e) {
+                # Replay select mode: click selects bar instead of panning
+                if ($self->{_replay_select_mode}) {
+                    my $idx = $self->_global_index_from_x($e->x);
+                    if (!defined $idx) {
+                        my ($ws, $we) = eval { $self->compute_window() };
+                        $idx = $we if defined $we;
+                    }
+                    if (defined $idx) {
+                        $self->set_selected_bar($idx);
+                        if (ref($self->{replay_bar_selected_callback}) eq 'CODE') {
+                            $self->{replay_bar_selected_callback}->($idx);
+                        }
+                        $self->request_render();
+                    }
+                    return;
+                }
                 $self->{last_drag_x} = $e->x;
                 $self->{last_drag_y} = $e->y;
             }
@@ -548,6 +595,20 @@ sub bind_events {
 
     $mw->Tk::bind('<Key-r>', sub { $self->reset_view(); });
     $mw->Tk::bind('<Key-R>', sub { $self->reset_view(); });
+
+    # --- Replay keyboard shortcuts ---
+    $mw->Tk::bind('<Shift-Right>', sub { $self->_replay_shift_right_key(); });
+    $mw->Tk::bind('<Shift-Left>',  sub { $self->_replay_shift_left_key(); });
+    $mw->Tk::bind('<Shift-Down>',  sub { $self->_replay_shift_down_key(); });
+    $mw->Tk::bind('<Escape>',      sub { $self->_replay_escape_key(); });
+    $mw->Tk::bind('<Key-m>',       sub { $self->_replay_key_m_window(); });
+}
+
+# Expose bind_replay_window_shortcuts as alias (called from market.pl)
+sub bind_replay_window_shortcuts {
+    my ($self, $mw) = @_;
+    # Already bound in bind_events — nothing extra needed.
+    return $self;
 }
 
 # =============================================================================
@@ -855,6 +916,16 @@ sub on_mouse_move {
     my ($self, $event) = @_;
     return unless $event;
 
+    $self->{last_mouse_x} = $event->x;
+    $self->{last_mouse_y} = $event->y;
+
+    # Replay select mode: show scissors hover line instead of crosshair
+    if ($self->{_replay_select_mode}) {
+        $self->{price_canvas}->configure(-cursor => 'tcross') if $self->{price_canvas};
+        $self->_draw_replay_select_hover(undef, $event->x, $event->y);
+        return;
+    }
+
     $self->{crosshair_x} = $event->x;
     $self->{crosshair_y} = $event->y;
     $self->{crosshair_w} = $event->W;
@@ -1014,85 +1085,319 @@ sub set_auto_scale {
     }
 }
 
+# =============================================================================
+# REPLAY MODE — ported from ProyectoB
+# =============================================================================
 
-# --- 2. NUEVOS MÉTODOS DE GESTIÓN DE OVERLAYS ---
-sub add_overlay {
-    my ($self, $overlay) = @_;
-    push @{$self->{overlays}}, $overlay;
+use constant {
+    REPLAY_BAR_ANCHOR_FRAC => 0.80,
+    MIN_VISIBLE_BARS_REPLAY => 10,
+};
+
+sub _canvas_width {
+    my ($self, $canvas) = @_;
+    return 1 unless $canvas;
+    my $w = eval { $canvas->Width() } || eval { $canvas->width() } || 1;
+    return $w > 0 ? $w : 1;
 }
 
-# --- 3. NUEVOS MÉTODOS DE REPLAY QUE SE LLAMAN DESDE MARKET.PL ---
-sub toggle_replay_mode {
-    my ($self, $start_index) = @_;
+sub _canvas_size {
+    my ($self, $canvas) = @_;
+    return (1, 1) unless $canvas;
+    my $w = eval { $canvas->Width()  } || 1;
+    my $h = eval { $canvas->Height() } || 1;
+    return ($w, $h);
+}
+
+sub replay_start_index {
+    my ($self) = @_;
+    if (defined $self->{_selected_bar}) {
+        my $idx = $self->{_selected_bar} - 1;
+        $idx = 0 if $idx < 0;
+        my $md = $self->{market_data};
+        my $last = (defined $md) ? ($md->size() - 1) : 0;
+        $idx = $last if $idx > $last;
+        return $idx;
+    }
     my $md = $self->{market_data};
-    
-    if ($md->is_replay_active()) {
-        $self->pause_replay();
-        $md->set_replay_mode(0);
-    } else {
-        # Por defecto, iniciamos el replay 100 velas atrás si no se especifica
-        $start_index //= ($md->size() > 100) ? $md->size() - 100 : 0;
-        $md->set_replay_mode(1, $start_index);
-    }
-    
-    # Forzamos el offset a 0 para anclarnos a la "vela actual" simulada
-    $self->{offset} = 0;
-    $self->request_render();
+    my $last = (defined $md) ? ($md->size() - 1) : 0;
+    my $vis = $self->{visible_bars} || 60;
+    my $start_idx = $last - $vis;
+    return $start_idx < 0 ? 0 : $start_idx;
 }
 
-sub play_replay {
+sub replay_random_start_index {
     my ($self) = @_;
-    return unless $self->{market_data}->is_replay_active();
-    return if defined $self->{replay_timer_id}; # Evitar múltiples loops
-    
-    my $mw = $self->{widgets}->{main_window};
-    
-    # Callback recursivo para el Play
-    my $step_cb;
-    $step_cb = sub {
-        my $advanced = $self->{market_data}->step_forward();
-        if ($advanced) {
-            $self->request_render();
-            # Notificamos a los indicadores que se actualicen
-            $self->{indicator_manager}->update_last($self->{market_data});
-            
-            # Programamos el siguiente tick
-            $self->{replay_timer_id} = $mw->after($self->{replay_speed}, $step_cb);
-        } else {
-            $self->pause_replay(); # Llegamos al final
+    my $md = $self->{market_data};
+    my $last = (defined $md) ? ($md->size() - 1) : 0;
+    return 0 if $last < 10;
+    my $lo = 10;
+    my $hi = $last - 1;
+    return $lo if $hi <= $lo;
+    return $lo + int(rand($hi - $lo + 1));
+}
+
+sub index_for_timestamp {
+    my ($self, $ts_str) = @_;
+    return undef unless defined $ts_str && length $ts_str;
+    my $md = $self->{market_data};
+    return undef unless $md && $md->can('size') && $md->can('get_timestamp');
+    my $size = $md->size() || 0;
+    return undef unless $size > 0;
+    my ($ty, $tm, $td) = $ts_str =~ /^(\d{4})-(\d{2})-(\d{2})/;
+    return undef unless defined $ty;
+    my $target = $ty * 10000 + $tm * 100 + $td;
+    my ($best_idx, $best_dist) = (0, undef);
+    for my $i (0 .. $size - 1) {
+        my $ts = $md->get_timestamp($i);
+        next unless defined $ts;
+        my ($y, $m, $d) = $ts =~ /^(\d{4})-(\d{2})-(\d{2})/;
+        next unless defined $y;
+        my $dist = abs($y * 10000 + $m * 100 + $d - $target);
+        if (!defined $best_dist || $dist < $best_dist) {
+            $best_dist = $dist;
+            $best_idx  = $i;
         }
+    }
+    return $best_idx;
+}
+
+sub set_replay_select_mode {
+    my ($self, $on) = @_;
+    $on = $on ? 1 : 0;
+    if (!$on && $self->{_replay_select_mode}) {
+        $self->_clear_replay_select_hover();
+    }
+    $self->{_replay_select_mode} = $on;
+    if (!$on) {
+        $self->{price_canvas}->configure(-cursor => 'crosshair') if $self->{price_canvas};
+    }
+    if (ref($self->{replay_select_mode_callback}) eq 'CODE') {
+        $self->{replay_select_mode_callback}->($on);
+    }
+    return $self;
+}
+
+sub is_replay_select_mode {
+    my ($self) = @_;
+    return $self->{_replay_select_mode} ? 1 : 0;
+}
+
+sub clear_replay_select_mode {
+    my ($self) = @_;
+    return $self->set_replay_select_mode(0);
+}
+
+sub clear_replay_select_state {
+    my ($self) = @_;
+    $self->{_selected_bar} = undef;
+    return $self->clear_replay_select_mode();
+}
+
+sub selected_bar   { $_[0]->{_selected_bar} }
+
+sub set_selected_bar {
+    my ($self, $idx) = @_;
+    return $self unless defined $idx;
+    my $md   = $self->{market_data};
+    my $last = $md ? ($md->size() - 1) : 0;
+    $idx = 0    if $idx < 0;
+    $idx = $last if $idx > $last;
+    $self->_clear_replay_select_hover();
+    $self->{_selected_bar} = $idx;
+    $self->clear_replay_select_mode();
+    return $self;
+}
+
+sub adjust_selected_bar {
+    my ($self, $delta) = @_;
+    return $self unless $self->{_replay_select_mode};
+    my $idx = defined $self->{_selected_bar}
+        ? $self->{_selected_bar} + $delta
+        : do { my $i = $self->_global_index_from_x($self->{last_mouse_x}); $i // 0 };
+    return $self->set_selected_bar($idx);
+}
+
+sub restore_after_replay_exit {
+    my ($self) = @_;
+    delete $self->{replay_view_anchor};
+    $self->{offset} = 0;
+    $self->_clear_replay_select_hover();
+    $self->_purge_replay_visuals();
+    $self->{price_canvas}->configure(-cursor => 'crosshair') if $self->{price_canvas};
+    return $self;
+}
+
+sub focus_price_canvas_for_replay {
+    my ($self) = @_;
+    eval { $self->{price_canvas}->focus() } if $self->{price_canvas};
+    return $self;
+}
+
+sub frame_replay_view_at {
+    my ($self, $index, $opts) = @_;
+    $opts //= {};
+    my $total = $self->{market_data} ? $self->{market_data}->size() : 0;
+    return $self unless $total > 0;
+    $index //= 0;
+    $index = 0 if $index < 0;
+    $index = $total - 1 if $index > $total - 1;
+    $self->{offset} = 0;
+    if ($opts->{anchor}) {
+        $self->{replay_view_anchor} = REPLAY_BAR_ANCHOR_FRAC;
+    } else {
+        delete $self->{replay_view_anchor};
+    }
+    return $self;
+}
+
+sub sync_overlay_indicators {
+    my ($self) = @_;
+    $self->{smc_cache_key} = undef;
+    return $self;
+}
+
+sub _global_index_from_x {
+    my ($self, $x) = @_;
+    return undef unless defined $x;
+    my ($start, $end) = $self->compute_window();
+    my $bars = $end - $start + 1;
+    return undef if $bars < 1;
+    my $w    = $self->_canvas_width($self->{price_canvas});
+    my $bar_w = $w / $bars;
+    return undef if $bar_w <= 0;
+    my $local = int($x / $bar_w);
+    $local = 0         if $local < 0;
+    $local = $bars - 1 if $local >= $bars;
+    return $start + $local;
+}
+
+sub _replay_session_active {
+    my ($self) = @_;
+    return 1 if $self->{_replay_select_mode};
+    my $rc = $self->{replay_controller};
+    return 1 if $rc && $rc->is_active();
+    my $ref = $self->{replay_on_ref};
+    return ($ref && ${ $ref }) ? 1 : 0;
+}
+
+sub _purge_replay_visuals {
+    my ($self) = @_;
+    my @tags = qw(replay_watermark replay_select_hover replay_select_veil replay_select_marker);
+    for my $canvas ($self->{price_canvas}, $self->{atr_canvas}) {
+        next unless $canvas;
+        for my $tag (@tags) { eval { $canvas->delete($tag) } }
+    }
+    return $self;
+}
+
+sub _draw_replay_watermark {
+    my ($self, $canvas) = @_;
+    return unless $canvas;
+    eval { $canvas->delete('replay_watermark') };
+    my $replay = $self->{replay_controller};
+    return unless $replay && $replay->is_active();
+    my $ref = $self->{replay_watermark_on_ref};
+    return if $ref && !${ $ref };
+    my ($w, $h) = $self->_canvas_size($canvas);
+    return unless $w > 0 && $h > 0;
+    eval {
+        $canvas->createText(
+            $w / 2, $h / 2,
+            -text => 'Replay',
+            -fill => '#d0d0d0',
+            -font => 'Helvetica 48 bold',
+            -tags => 'replay_watermark',
+        );
+        eval { $canvas->lower('replay_watermark', 'candle') };
     };
-    
-    # Iniciamos el primer tick
-    $self->{replay_timer_id} = $mw->after($self->{replay_speed}, $step_cb);
+    return;
 }
 
-sub pause_replay {
+sub _clear_replay_select_hover {
     my ($self) = @_;
-    if (defined $self->{replay_timer_id}) {
-        my $mw = $self->{widgets}->{main_window};
-        $mw->afterCancel($self->{replay_timer_id});
-        $self->{replay_timer_id} = undef;
+    for my $canvas ($self->{price_canvas}, $self->{atr_canvas}) {
+        next unless $canvas;
+        eval { $canvas->delete('replay_select_hover') };
+        eval { $canvas->delete('replay_select_veil') };
     }
+    return $self;
 }
 
-sub step_forward {
+sub _draw_replay_select_hover {
+    my ($self, $widget, $raw_x, $raw_y) = @_;
+    return unless defined $raw_x;
+    $self->_clear_replay_select_hover();
+    my $canvas = $self->{price_canvas};
+    return unless $canvas;
+    my ($start, $end) = $self->compute_window();
+    my $bars = $end - $start + 1;
+    return if $bars < 1;
+    my ($w, $h) = $self->_canvas_size($canvas);
+    return unless $w > 0 && $h > 0;
+    my $bar_w = $w / $bars;
+    return unless $bar_w > 0;
+    my $local = int($raw_x / $bar_w);
+    $local = 0         if $local < 0;
+    $local = $bars - 1 if $local >= $bars;
+    my $line_x = ($local + 0.5) * $bar_w;
+    eval {
+        $canvas->createLine(
+            $line_x, 0, $line_x, $h,
+            -fill  => '#2962ff',
+            -width => 2,
+            -tags  => 'replay_select_hover',
+        );
+    };
+    return $self;
+}
+
+sub _replay_shift_down_key {
     my ($self) = @_;
-    $self->pause_replay(); # El paso manual pausa la reproducción automática
-    if ($self->{market_data}->step_forward()) {
-        $self->{indicator_manager}->update_last($self->{market_data});
+    my $rc = $self->{replay_controller};
+    return unless $rc && $rc->is_active();
+    my $cb = $self->{replay_keyboard_callbacks}{toggle_play};
+    $cb->() if ref($cb) eq 'CODE';
+}
+
+sub _replay_shift_right_key {
+    my ($self) = @_;
+    if ($self->{_replay_select_mode}) {
+        $self->adjust_selected_bar(1);
         $self->request_render();
+        return;
     }
+    my $rc = $self->{replay_controller};
+    return unless $rc && $rc->is_active();
+    my $cb = $self->{replay_keyboard_callbacks}{step_fwd};
+    $cb->() if ref($cb) eq 'CODE';
 }
 
-sub step_backward {
+sub _replay_shift_left_key {
     my ($self) = @_;
-    $self->pause_replay();
-    if ($self->{market_data}->step_backward()) {
-        # Al retroceder, idealmente deberías regenerar o usar un snapshot de memoria 
-        # en SMC_Structures, pero renderizar hacia atrás funciona para la vista.
+    if ($self->{_replay_select_mode}) {
+        $self->adjust_selected_bar(-1);
         $self->request_render();
+        return;
     }
+    my $rc = $self->{replay_controller};
+    return unless $rc && $rc->is_active();
+    my $cb = $self->{replay_keyboard_callbacks}{step_back};
+    $cb->() if ref($cb) eq 'CODE';
 }
 
+sub _replay_escape_key {
+    my ($self) = @_;
+    return unless $self->_replay_session_active();
+    my $cb = $self->{replay_keyboard_callbacks}{exit};
+    $cb->() if ref($cb) eq 'CODE';
+}
+
+sub _replay_key_m_window {
+    my ($self) = @_;
+    my $rc = $self->{replay_controller};
+    return unless $rc && $rc->is_active();
+    my $cb = $self->{replay_keyboard_callbacks}{toggle_watermark};
+    $cb->() if ref($cb) eq 'CODE';
+}
 1;
