@@ -237,35 +237,44 @@ sub draw_time_axis {
 
     my $scale = $self->{scale};
     my ($start_index, $end_index) = $self->{engine}->compute_window();
-    my $canvas_height = $self->{canvas}->Height();
 
     for my $etiqueta (@$etiquetas) {
-        my $pos_relativa = $etiqueta->{indice_relativo} // 0;
-        my $absolute_index = $start_index + $pos_relativa;
-        my $x = $scale->index_to_center_x($absolute_index);
-        
-        my $texto = $etiqueta->{timestamp};
-        my ($hora) = $texto =~ /T?(\d{2}:\d{2})/;
-        $hora //= $texto; 
+        my $type = $etiqueta->{type} // 'hour';
 
-        my $color_texto = '#4b4b4c';
-        my $font_weight = 'normal';
-        
-        if ($etiqueta->{es_cambio_dia}) {
+        # Las etiquetas internas de marcador no se dibujan
+        next if $type eq 'start' || $type eq 'end';
+
+        my $absolute_index = $etiqueta->{indice_absoluto}
+            // ($start_index + ($etiqueta->{indice_relativo} // 0));
+        my $x = $scale->index_to_center_x($absolute_index);
+
+        my $texto = $etiqueta->{timestamp} // "";
+
+        my ($label, $color_texto, $font_weight);
+
+        if ($type eq 'day') {
+            # Cambio de día: mostrar número de día en negrita oscura
             $color_texto = '#000000';
             $font_weight = 'bold';
-            
-            # --- ¡AQUÍ ESTÁ LA MAGIA! ---
-            # Extraemos solo el día (los dos últimos dígitos de la fecha YYYY-MM-DD)
             if ($texto =~ /^\d{4}-\d{2}-(\d{2})/) {
-                $hora = int($1); # int() quita el cero a la izquierda (ej: "05" -> "5")
+                $label = int($1);   # int() elimina el cero inicial ("05" → "5")
+            } else {
+                ($label) = $texto =~ /T?(\d{2}:\d{2})/;
+                $label //= $texto;
             }
-            
+        } else {
+            # Etiqueta horaria normal: HH:MM en gris
+            $color_texto = '#4b4b4c';
+            $font_weight = 'normal';
+            ($label) = $texto =~ /[T ]?(\d{2}:\d{2})/;
+            $label //= $texto;
         }
-        
+
+        next unless defined $label && length($label) > 0;
+
         $time_cv->createText(
             $x, 12,
-            -text => $hora,
+            -text => $label,
             -fill => $color_texto,
             -font => ['Helvetica', 10, $font_weight]
         );

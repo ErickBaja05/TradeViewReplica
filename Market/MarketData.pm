@@ -2,6 +2,17 @@ package Market::MarketData;
 
 use strict;
 use warnings;
+use Time::Local qw(timegm);
+
+# Duración en minutos de cada temporalidad agregada a partir de la base de 1m.
+our %BLOCK_MINUTES = (
+   '5m'  => 5,
+   '15m' => 15,
+   '1h'  => 60,
+   '2h'  => 120,
+   '4h'  => 240,
+   '1d'  => 1440,
+);
 
 sub new {
    my ($class) = @_;
@@ -9,8 +20,13 @@ sub new {
    my $self = {
       timeframe => '1m',
       data => {
-         '1m'  => [], '5m'  => [], '15m' => [], '1h' => [], 
-         '2h'  => [], '4h'  => [], 'D'   => [], 'W'  => []
+         '1m'  => [],
+         '5m'  => [],
+         '15m' => [],
+         '1h'  => [],
+         '2h'  => [],
+         '4h'  => [],
+         '1d'  => [],
       },
       candles => [],
       
@@ -221,68 +237,53 @@ alineando matemáticamente el reloj (ej. 00, 15, 30, 45, o inicios de hora/día/
 sub build_tf_candles {
    my ($self, $tf) = @_;
 
+   my $block_minutes = $BLOCK_MINUTES{$tf};
+   return unless $block_minutes;
+
    my $candles_1m = $self->{candles};
    $self->{data}->{$tf} = [];
 
    return if scalar(@{$candles_1m}) == 0;
 
-   my $current_bucket_time = undef;
+   my $block_seconds = $block_minutes * 60;
+
+   my $current_bucket_epoch = undef;
    my $current_candle = undef;
 
-   # Recorremos la línea temporal secuencialmente analizando el reloj de cada vela
+   # Recorremos la línea temporal secuencialmente agrupando por bloques de
+   # $block_seconds segundos. Usamos el "reloj de pared" (los componentes
+   # Y-M-D H:M:S tal cual aparecen en el CSV, ignorando la zona horaria) para
+   # que los cajones queden anclados a las fronteras naturales (00:00, 04:00,
+   # 08:00... para 4h; 00:00 para 1D), igual que TradingView. Esto también
+   # soporta correctamente temporalidades >= 1 hora, donde una sola hora del
+   # reloj ya no alcanza para deducir el cajón (a diferencia de 5m/15m).
    for my $candle (@{$candles_1m}) {
       my $time_str = $candle->{time};
-      my $bucket_time_str = "";
-      
-      # Nueva Expresión Regular para desglosar todo: Año, Mes, Día, Hora, Minutos
-      if ($time_str =~ /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(.*)$/) {
-         my $yyyy = $1;
-         my $mo   = $2;
-         my $dd   = $3;
-         my $hh   = int($4);
-         my $min  = int($5);
-         my $suffix = $6 || ":00";
-         
-         # 1. Temporalidades Intradía (Minutos)
-         if ($tf eq '5m' || $tf eq '15m') {
-             my $block = ($tf eq '5m') ? 5 : 15;
-             my $bucket_min = $min - ($min % $block);
-             $bucket_time_str = sprintf("%s-%s-%s %02d:%02d%s", $yyyy, $mo, $dd, $hh, $bucket_min, $suffix);
-         }
-         # 2. Temporalidades Intradía (Horas)
-         elsif ($tf eq '1h' || $tf eq '2h' || $tf eq '4h') {
-             my $block = ($tf eq '1h') ? 1 : (($tf eq '2h') ? 2 : 4);
-             my $bucket_hh = $hh - ($hh % $block);
-             $bucket_time_str = sprintf("%s-%s-%s %02d:00:00", $yyyy, $mo, $dd, $bucket_hh);
-         }
-         # 3. Temporalidades Diarias
-         elsif ($tf eq 'D') {
-             $bucket_time_str = sprintf("%s-%s-%s 00:00:00", $yyyy, $mo, $dd);
-         }
-         # 4. Temporalidades Semanales
-         elsif ($tf eq 'W') {
-             require Time::Moment;
-             # Creamos el momento asumiendo UTC para cálculos limpios y rápidos
-             my $tm = Time::Moment->from_string("${yyyy}-${mo}-${dd}T00:00:00Z");
-             my $dow = $tm->day_of_week; # 1 = Lunes, 7 = Domingo
-             
-             # Retrocedemos los días necesarios para anclar al Lunes de esa semana
-             my $monday = $tm->minus_days($dow - 1);
-             $bucket_time_str = sprintf("%04d-%02d-%02d 00:00:00", $monday->year, $monday->month, $monday->day_of_month);
-         }
-         else {
-             warn "[MarketData Error] Temporalidad '$tf' no configurada en build_tf_candles.\n";
-             return;
-         }
-         
-         # Lógica de agrupación de la vela ancla
-         if (!defined $current_bucket_time || $bucket_time_str ne $current_bucket_time) {
-            
+
+      if ($time_str =~ /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(.*)$/) {
+         my ($year, $mon, $day, $hh, $mm, $ss, $tz) = ($1, $2, $3, $4, $5, $6, $7);
+
+         my $epoch = eval { timegm($ss, $mm, $hh, $day, $mon - 1, $year) };
+         next unless defined $epoch;
+
+         my $bucket_epoch = $epoch - ($epoch % $block_seconds);
+
+         # Si no hay bloque activo, o si saltamos a un nuevo bloque de tiempo
+         if (!defined $current_bucket_epoch || $bucket_epoch != $current_bucket_epoch) {
+
+            # Guardamos la vela ancla terminada en el historial
             if (defined $current_candle) {
                push @{$self->{data}->{$tf}}, $current_candle;
             }
-            
-            $current_bucket_time = $bucket_time_str;
+
+            my (undef, $b_mm, $b_hh, $b_day, $b_mon, $b_year) = gmtime($bucket_epoch);
+            my $bucket_time_str = sprintf(
+               "%04d-%02d-%02dT%02d:%02d:00%s",
+               $b_year + 1900, $b_mon + 1, $b_day, $b_hh, $b_mm, $tz
+            );
+
+            # Inicia una nueva vela ancla
+            $current_bucket_epoch = $bucket_epoch;
             $current_candle = {
                time   => $bucket_time_str,
                open   => 0.0 + $candle->{open},
@@ -292,7 +293,7 @@ sub build_tf_candles {
                volume => 0.0 + $candle->{volume}
             };
          } else {
-            # Actualización de extremos si caemos dentro del mismo bloque de tiempo
+            # Si el tiempo sigue cayendo en el mismo cajón, actualizamos la vela
             $current_candle->{high}  = $candle->{high} if $candle->{high} > $current_candle->{high};
             $current_candle->{low}   = $candle->{low}  if $candle->{low}  < $current_candle->{low};
             $current_candle->{close} = 0.0 + $candle->{close};
@@ -300,8 +301,8 @@ sub build_tf_candles {
          }
       }
    }
-   
-   # Guardamos la última vela que quedó formándose en memoria
+
+   # Guardamos la última vela que quedó formándose en memoria al acabar el bucle
    if (defined $current_candle) {
       push @{$self->{data}->{$tf}}, $current_candle;
    }
@@ -327,14 +328,9 @@ sub build_timeframes {
       return $self;
    }
 
-   # Generación en cascada de todas las temporalidades soportadas en el OptionMenu
-   $self->build_tf_candles('5m');
-   $self->build_tf_candles('15m');
-   $self->build_tf_candles('1h');
-   $self->build_tf_candles('2h');
-   $self->build_tf_candles('4h');
-   $self->build_tf_candles('D');
-   $self->build_tf_candles('W');
+   for my $tf (sort { $BLOCK_MINUTES{$a} <=> $BLOCK_MINUTES{$b} } keys %BLOCK_MINUTES) {
+      $self->build_tf_candles($tf);
+   }
 
    return $self;
 }

@@ -30,68 +30,89 @@ my $smc_overlay;
 my $control_panel = $mw->Frame(-bg => '#fbfcf8', -relief => 'raised', -bd => 1)
                        ->pack(-side => 'top', -fill => 'x', -ipady => 4);
 
-my $tf_label = $control_panel->Label(
-    -text => "Temporalidad:",
-    -bg   => '#fbfcf8',
-    -fg   => '#b1b5be',
-    -font => 'Arial 10 bold'
-)->pack(-side => 'left', -padx => 10);
+# Control de Temporalidades (1m, 5m, 15m, 1h, 2h, 4h, 1d) mediante un menú
+# desplegable único, en lugar de un botón por cada temporalidad.
+my $tf_label = $control_panel->Label(-text => "Temporalidad:", -bg => '#fbfcf8', -fg => '#b1b5be', -font => 'Arial 10 bold')
+                             ->pack(-side => 'left', -padx => 10);
 
-# 1. Menú Desplegable (OptionMenu) para las temporalidades
-my @timeframes = ('1m', '5m', '15m', '1h', '2h', '4h', 'D', 'W');
-my $selected_tf = '1m';
+# Declaración adelantada de la referencia del motor para usar en los callbacks
+my $chart_engine;
+
+my @temporalidades = ('1m', '5m', '15m', '1h', '2h', '4h', '1d');
+my $tf_seleccionada = '1m';
 
 my $tf_menu = $control_panel->Optionmenu(
-    -options      => \@timeframes,
-    -textvariable => \$selected_tf,
-    -bg           => '#ffffff',
-    -fg           => '#131722',
-    -command      => sub { 
-        if ($chart_engine) {
-            $chart_engine->set_timeframe($selected_tf); 
-            $chart_engine->reset_view();
-        }
-    }
+    -options          => \@temporalidades,
+    -variable         => \$tf_seleccionada,
+    -bg               => '#ffffff',
+    -fg               => '#131722',
+    -activebackground => '#75bbfd',
+    -activeforeground => 'white',
+    -relief           => 'raised',
+    -cursor           => 'hand2',
+    -command          => sub {
+        my ($valor) = @_;
+        $chart_engine->set_timeframe($valor) if $chart_engine && defined $valor;
+    },
 )->pack(-side => 'left', -padx => 3);
 
+# Espaciador estético intermedio
+$control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
 
-$control_panel->Label(
-    -text => " | Vista:",
-    -bg   => '#fbfcf8',
-    -fg   => '#b1b5be',
-    -font => 'Arial 10 bold'
-)->pack(-side => 'left');
+my $indicator_label = $control_panel->Label(-text => "Indicadores:", -bg => '#fbfcf8', -fg => '#b1b5be', -font => 'Arial 10 bold')
+                             ->pack(-side => 'left', -padx => 10);
 
-my @vista_opciones = ('Completa', 'Solo Liquidez', 'Solo SMC', 'Limpio');
-my $selected_vista = 'Completa';
+my $indicator_menu = $control_panel->Menubutton(
+    -text             => "Indicators",
+    -bg               => '#ffffff',
+    -fg               => '#131722',
+    -activebackground => '#75bbfd',
+    -activeforeground => 'white',
+    -relief           => 'raised',
+    -cursor           => 'hand2',
+)->pack(-side => 'left', -padx => 5);
 
-$control_panel->Optionmenu(
-    -options      => \@vista_opciones,
-    -textvariable => \$selected_vista,
-    -bg           => '#ffffff',
-    -fg           => '#131722',
-    -command      => sub {
-        # Controlamos las variables booleanas de los overlays de Doménica
-        if ($selected_vista eq 'Completa') {
-            $liquidity_overlay->{active}  = 1;
-            $smc_overlay->{show_fvg}       = 1;
-            $smc_overlay->{show_structure} = 1;
-        } elsif ($selected_vista eq 'Solo Liquidez') {
-            $liquidity_overlay->{active}  = 1;
-            $smc_overlay->{show_fvg}       = 0;
-            $smc_overlay->{show_structure} = 0;
-        } elsif ($selected_vista eq 'Solo SMC') {
-            $liquidity_overlay->{active}  = 0;
-            $smc_overlay->{show_fvg}       = 1;
-            $smc_overlay->{show_structure} = 1;
-        } else {
-            $liquidity_overlay->{active}  = 0;
-            $smc_overlay->{show_fvg}       = 0;
-            $smc_overlay->{show_structure} = 0;
-        }
-        $chart_engine->request_render(); # Forzamos a repintar el canvas
-    }
-)->pack(-side => 'left', -padx => 3);
+my $menu = $indicator_menu->Menu(-tearoff => 0);
+$indicator_menu->configure(-menu => $menu);
+
+my %vars = (
+    show_liquidity    => 1,
+    show_smc          => 1,
+    show_choch        => 1,
+    show_bos          => 1,
+    show_lq_events    => 1,
+    show_swing        => 0,
+    show_fvg          => 1,
+    show_ob           => 1,
+);
+
+my @items = (
+    ["Liquidity",    "show_liquidity", "#0e5e50"],
+    ["SMC",          "show_smc",       "#2962ff"],
+    ["ChoCH",        "show_choch",     "#3f0202"],
+    ["BOS",          "show_bos",       "#0c3f02"],
+    ["LQ_Events",    "show_lq_events", "#06023f"],
+    ["Swing",        "show_swing",     "#4d0a47"],
+    ["FVG",          "show_fvg",       "#aa2424"],
+    ["Order Blocks", "show_ob",        "#ff9800"],
+);
+
+for my $item (@items) {
+    my ($label, $key, $color) = @$item;
+
+    $menu->checkbutton(
+        -label            => $label,
+        -variable         => \$vars{$key},
+        -foreground       => $color,
+        -activeforeground => $color,
+        -selectcolor      => $color,
+        -command          => sub {
+            return unless $chart_engine;
+            $chart_engine->{$key} = $vars{$key};
+            $chart_engine->request_render();
+        },
+    );
+}
 
 $control_panel->Label(
     -text => " | ",

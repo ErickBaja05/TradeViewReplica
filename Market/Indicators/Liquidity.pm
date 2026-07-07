@@ -1,224 +1,390 @@
 package Market::Indicators::Liquidity;
+
 use strict;
 use warnings;
 
 sub new {
     my ($class, %args) = @_;
+
     my $self = {
-        atr_period       => $args{atr_period} || 14,
-        k_depth          => $args{k_depth} || 3,
-        swing_highs      => [],
-        swing_lows       => [],
-        liquidity_events => [],
+        atr_mult         => $args{atr_mult}         // 4.0,
+        minor_atr_mult   => $args{minor_atr_mult}   // 1.5,
+        eq_tolerance     => $args{eq_tolerance}     // 0.10,
+        confirm_bars     => $args{confirm_bars}     // 3,
+
+        state            => 'BUSCANDO_MAXIMO',
+        minor_state      => 'BUSCANDO_MAXIMO',
+
+        candidate_high   => undef,
+        candidate_low    => undef,
+
+        minor_high       => undef,
+        minor_low        => undef,
+
+        pivots           => [],
+        minor_pivots     => [],
+        liquidity        => [],
+        events           => [],
+        equal_levels     => [],
     };
-    bless $self, $class;
-    return $self;
+
+    return bless $self, $class;
 }
 
 sub reset {
     my ($self) = @_;
-    $self->{swing_highs}      = [];
-    $self->{swing_lows}       = [];
-    $self->{liquidity_events} = [];
+
+    $self->{state}          = 'BUSCANDO_MAXIMO';
+    $self->{minor_state}    = 'BUSCANDO_MAXIMO';
+
+    $self->{candidate_high} = undef;
+    $self->{candidate_low}  = undef;
+
+    $self->{minor_high}     = undef;
+    $self->{minor_low}      = undef;
+
+    $self->{pivots}         = [];
+    $self->{minor_pivots}   = [];
+    $self->{liquidity}      = [];
+    $self->{events}         = [];
+    $self->{equal_levels}   = [];
 }
 
-sub update_last {
-    my ($self, $market_data) = @_;
-    my $size = $market_data->size();
-    return if $size <= $self->{k_depth};
+sub calculate_until {
+    my ($self, $candles, $atr_values, $until_index) = @_;
 
-    my $candidate_index = $size - 1 - $self->{k_depth};
-    return if $candidate_index < 0;
+    $self->reset();
 
-    $self->detect_swing_points($market_data, $candidate_index);
-    $self->update_state_machine($market_data);
+    for my $i (0 .. $until_index) {
+        $self->process_bar($candles, $atr_values, $i);
+    }
+    $self->_detect_equal_levels();
+
+    return {
+        pivots            => $self->{pivots},
+        structural_pivots => $self->{pivots},
+        minor_pivots      => $self->{minor_pivots},
+        liquidity         => $self->{liquidity},
+        events            => $self->{events},
+        equal_levels      => $self->{equal_levels},
+    };
 }
 
-sub detect_swing_points {
-    my ($self, $market_data, $current_index) = @_;
-    my $k      = $self->{k_depth};
-    my $size   = $market_data->size();
-    return unless defined $current_index && $current_index >= $k;
-    return if $current_index + $k > $size - 1;
+sub process_bar {
+    my ($self, $candles, $atr_values, $i) = @_;
 
-    my $candle = $market_data->get_candle($current_index);
-    return unless $candle && defined $candle->{high} && defined $candle->{low};
+    my $bar = $candles->[$i];
+    return if !$bar;
 
-    my $high = $candle->{high};
-    my $low  = $candle->{low};
+    my $atr = $atr_values->[$i] // 0;
+    return if $atr <= 0;
 
-    my $is_swing_high = 1;
-    my $is_swing_low  = 1;
-
-    for my $index ($current_index - $k .. $current_index + $k) {
-        next if $index == $current_index;
-        my $peer = $market_data->get_candle($index);
-        next unless $peer;
-
-        $is_swing_high = 0 if $high <= $peer->{high};
-        $is_swing_low  = 0 if $low >= $peer->{low};
-        last if !$is_swing_high && !$is_swing_low;
-    }
-
-    return unless $is_swing_high || $is_swing_low;
-
-    if ($is_swing_high && !$self->_contains_event($current_index, 'BSL')) {
-        push @{$self->{liquidity_events}}, {
-            index       => $current_index,
-            price       => $high,
-            type        => 'BSL',
-            state       => 'DETECTED',
-            detected_at => $market_data->get_timestamp($current_index),
-            bar_count   => 0,
-        };
-    }
-
-    if ($is_swing_low && !$self->_contains_event($current_index, 'SSL')) {
-        push @{$self->{liquidity_events}}, {
-            index       => $current_index,
-            price       => $low,
-            type        => 'SSL',
-            state       => 'DETECTED',
-            detected_at => $market_data->get_timestamp($current_index),
-            bar_count   => 0,
-        };
-    }
+    $self->_process_minor_pivot($bar, $atr, $i);
+    $self->_process_structural_pivot($bar, $atr, $i);
+    $self->_update_liquidity_states($bar, $i);
 }
 
-sub update_state_machine {
-    my ($self, $market_data) = @_;
-    my $current_candle = $market_data->last_candle();
-    return unless $current_candle;
+sub _process_minor_pivot {
+    my ($self, $bar, $atr, $i) = @_;
 
-    my $current_index = $market_data->last_index();
-    my $atr_value     = $self->compute_atr($market_data);
-    my $tolerance     = $self->calculate_eq_tolerance($atr_value);
+    my $threshold = $atr * $self->{minor_atr_mult};
 
-    foreach my $event (@{$self->{liquidity_events}}) {
-        next if $event->{state} =~ /^(SWEEP|GRAB|RUN)$/;
+    my $high  = $bar->{high};
+    my $low   = $bar->{low};
+    my $close = $bar->{close};
 
-        if ($event->{state} eq 'DETECTED') {
-            if ($event->{type} eq 'BSL' && $current_candle->{high} >= $event->{price}) {
-                $event->{state}       = 'SWEEP_UP';
-                $event->{sweep_index} = $current_index;
-                $event->{bar_count}   = 0;
-                next;
-            }
+    if ($self->{minor_state} eq 'BUSCANDO_MAXIMO') {
 
-            if ($event->{type} eq 'SSL' && $current_candle->{low} <= $event->{price}) {
-                $event->{state}       = 'SWEEP_DOWN';
-                $event->{sweep_index} = $current_index;
-                $event->{bar_count}   = 0;
-                next;
-            }
+        if (!defined $self->{minor_high} || $high > $self->{minor_high}->{price}) {
+            $self->{minor_high} = {
+                type  => 'HIGH',
+                index => $i,
+                price => $high,
+                atr   => $atr,
+                tier  => 'minor',
+            };
         }
 
-        if ($event->{state} eq 'SWEEP_UP') {
-            $event->{bar_count}++;
+        if (defined $self->{minor_high} && ($self->{minor_high}->{price} - $close) >= $threshold) {
+            push @{$self->{minor_pivots}}, $self->{minor_high};
 
-            if ($current_candle->{close} > $event->{price} + $tolerance) {
-                if ($event->{bar_count} <= 3 && $current_candle->{low} <= $event->{price} + $tolerance) {
-                    $self->_resolve_event($event, 'GRAB', $current_index);
-                } else {
-                    $self->_resolve_event($event, 'RUN', $current_index);
-                }
-                next;
-            }
+            $self->{minor_low} = {
+                type  => 'LOW',
+                index => $i,
+                price => $low,
+                atr   => $atr,
+                tier  => 'minor',
+            };
 
-            if ($current_candle->{low} <= $event->{price} - $tolerance) {
-                $self->_resolve_event($event, 'SWEEP', $current_index);
-                next;
-            }
-
-            if ($event->{bar_count} >= 3) {
-                $self->_resolve_event($event, 'RUN', $current_index);
-            }
+            $self->{minor_high}  = undef;
+            $self->{minor_state} = 'BUSCANDO_MINIMO';
         }
 
-        if ($event->{state} eq 'SWEEP_DOWN') {
-            $event->{bar_count}++;
+    } elsif ($self->{minor_state} eq 'BUSCANDO_MINIMO') {
 
-            if ($current_candle->{close} < $event->{price} - $tolerance) {
-                if ($event->{bar_count} <= 3 && $current_candle->{high} >= $event->{price} - $tolerance) {
-                    $self->_resolve_event($event, 'GRAB', $current_index);
-                } else {
-                    $self->_resolve_event($event, 'RUN', $current_index);
-                }
-                next;
-            }
+        if (!defined $self->{minor_low} || $low < $self->{minor_low}->{price}) {
+            $self->{minor_low} = {
+                type  => 'LOW',
+                index => $i,
+                price => $low,
+                atr   => $atr,
+                tier  => 'minor',
+            };
+        }
 
-            if ($current_candle->{high} >= $event->{price} + $tolerance) {
-                $self->_resolve_event($event, 'SWEEP', $current_index);
-                next;
-            }
+        if (defined $self->{minor_low} && ($close - $self->{minor_low}->{price}) >= $threshold) {
+            push @{$self->{minor_pivots}}, $self->{minor_low};
 
-            if ($event->{bar_count} >= 3) {
-                $self->_resolve_event($event, 'RUN', $current_index);
-            }
+            $self->{minor_high} = {
+                type  => 'HIGH',
+                index => $i,
+                price => $high,
+                atr   => $atr,
+                tier  => 'minor',
+            };
+
+            $self->{minor_low}   = undef;
+            $self->{minor_state} = 'BUSCANDO_MAXIMO';
         }
     }
 }
 
-sub calculate_eq_tolerance {
-    my ($self, $atr_value) = @_;
-    return $atr_value && $atr_value > 0 ? $atr_value * 0.10 : 0.0001;
-}
+sub _process_structural_pivot {
+    my ($self, $bar, $atr, $i) = @_;
 
-sub compute_atr {
-    my ($self, $market_data) = @_;
-    my $period = $self->{atr_period} || 14;
-    my $size   = $market_data->size();
-    return 0 if $size < 2;
+    my $threshold = $atr * $self->{atr_mult};
 
-    my $start = $size - $period - 1;
-    $start = 0 if $start < 0;
+    my $high  = $bar->{high};
+    my $low   = $bar->{low};
+    my $close = $bar->{close};
 
-    my $sum   = 0;
-    my $count = 0;
+    if ($self->{state} eq 'BUSCANDO_MAXIMO') {
 
-    for my $idx ($start + 1 .. $size - 1) {
-        my $current  = $market_data->get_candle($idx);
-        my $previous = $market_data->get_candle($idx - 1);
-        next unless $current && $previous;
+        if (!defined $self->{candidate_high} || $high > $self->{candidate_high}->{price}) {
+            $self->{candidate_high} = {
+                type  => 'HIGH',
+                index => $i,
+                price => $high,
+                atr   => $atr,
+                tier  => 'structural',
+            };
+        }
 
-        my $tr = $current->{high} - $current->{low};
-        my $high_close = abs($current->{high} - $previous->{close});
-        my $low_close  = abs($current->{low}  - $previous->{close});
+        if (defined $self->{candidate_high} && ($self->{candidate_high}->{price} - $close) >= $threshold) {
+            push @{$self->{pivots}}, $self->{candidate_high};
 
-        $tr = $high_close if $high_close > $tr;
-        $tr = $low_close  if $low_close  > $tr;
+            push @{$self->{liquidity}}, {
+                type   => 'BSL',
+                state  => 'Detected',
+                index  => $self->{candidate_high}->{index},
+                price  => $self->{candidate_high}->{price},
+                source => 'StructuralPivotHigh',
+                tier   => 'structural',
+                created_index  => $self->{candidate_high}->{index},
+                swept_index    => undef,
+                resolved_index => undef,
+                classification => undef,
+                outside_count  => 0,
+            };
 
-        $sum += $tr;
-        $count++;
+            $self->{candidate_low} = {
+                type  => 'LOW',
+                index => $i,
+                price => $low,
+                atr   => $atr,
+                tier  => 'structural',
+            };
+
+            $self->{candidate_high} = undef;
+            $self->{state} = 'BUSCANDO_MINIMO';
+        }
+
+    } elsif ($self->{state} eq 'BUSCANDO_MINIMO') {
+
+        if (!defined $self->{candidate_low} || $low < $self->{candidate_low}->{price}) {
+            $self->{candidate_low} = {
+                type  => 'LOW',
+                index => $i,
+                price => $low,
+                atr   => $atr,
+                tier  => 'structural',
+            };
+        }
+
+        if (defined $self->{candidate_low} && ($close - $self->{candidate_low}->{price}) >= $threshold) {
+            push @{$self->{pivots}}, $self->{candidate_low};
+
+            push @{$self->{liquidity}}, {
+                type           => 'SSL',
+                state          => 'Detected',
+                index          => $self->{candidate_low}->{index},
+                created_index  => $self->{candidate_low}->{index},
+                swept_index    => undef,
+                resolved_index => undef,
+                price          => $self->{candidate_low}->{price},
+                source         => 'StructuralPivotLow',
+                tier           => 'structural',
+                classification => undef,
+                outside_count  => 0,
+            };
+
+            $self->{candidate_high} = {
+                type  => 'HIGH',
+                index => $i,
+                price => $high,
+                atr   => $atr,
+                tier  => 'structural',
+            };
+
+            $self->{candidate_low} = undef;
+            $self->{state} = 'BUSCANDO_MAXIMO';
+        }
     }
-
-    return $count ? $sum / $count : 0;
 }
 
-sub get_values {
+sub _detect_equal_levels {
     my ($self) = @_;
-    return $self->{liquidity_events};
-}
 
-sub get_resolved_events {
-    my ($self) = @_;
-    my @resolved = grep { $_->{state} =~ /^(SWEEP|GRAB|RUN)$/ } @{$self->{liquidity_events}};
-    return \@resolved;
-}
+    my @recent_highs;
+    my @recent_lows;
 
-sub _contains_event {
-    my ($self, $index, $type) = @_;
-    for my $event (@{$self->{liquidity_events}}) {
-        return 1 if $event->{index} == $index && $event->{type} eq $type;
+    my $lookback_pivots = 20;
+
+    for my $p (@{$self->{minor_pivots}}) {
+
+        my $atr = $p->{atr} // 0;
+        next if $atr <= 0;
+
+        my $tolerance = $atr * $self->{eq_tolerance};
+
+        if ($p->{type} eq 'HIGH') {
+
+            for my $prev (@recent_highs) {
+                my $diff = abs($p->{price} - $prev->{price});
+
+                if ($diff <= $tolerance) {
+                    push @{$self->{equal_levels}}, {
+                        type       => 'EQH',
+                        state      => 'Detected',
+                        index1     => $prev->{index},
+                        index2     => $p->{index},
+                        price1     => $prev->{price},
+                        price2     => $p->{price},
+                        price      => ($prev->{price} + $p->{price}) / 2,
+                        tolerance  => $tolerance,
+                        source     => 'MinorPivotHigh',
+                    };
+                    last;
+                }
+            }
+
+            push @recent_highs, $p;
+            shift @recent_highs while @recent_highs > $lookback_pivots;
+        }
+
+        elsif ($p->{type} eq 'LOW') {
+
+            for my $prev (@recent_lows) {
+                my $diff = abs($p->{price} - $prev->{price});
+
+                if ($diff <= $tolerance) {
+                    push @{$self->{equal_levels}}, {
+                        type       => 'EQL',
+                        state      => 'Detected',
+                        index1     => $prev->{index},
+                        index2     => $p->{index},
+                        price1     => $prev->{price},
+                        price2     => $p->{price},
+                        price      => ($prev->{price} + $p->{price}) / 2,
+                        tolerance  => $tolerance,
+                        source     => 'MinorPivotLow',
+                    };
+                    last;
+                }
+            }
+
+            push @recent_lows, $p;
+            shift @recent_lows while @recent_lows > $lookback_pivots;
+        }
     }
-    return 0;
 }
 
-sub _resolve_event {
-    my ($self, $event, $state, $resolved_index) = @_;
-    $event->{state}        = $state;
-    $event->{resolved_at}  = $resolved_index;
-    $event->{last_updated} = $resolved_index;
+sub _update_liquidity_states {
+    my ($self, $bar, $i) = @_;
+
+    for my $lvl (@{$self->{liquidity}}) {
+
+        next if $lvl->{state} eq 'Resolved';
+
+        my $price = $lvl->{price};
+
+        if ($lvl->{state} eq 'Detected') {
+
+            if ($lvl->{type} eq 'BSL' && $bar->{high} > $price) {
+                $lvl->{state}         = 'Swept';
+                $lvl->{swept_index}   = $i;
+                $lvl->{outside_count} = 0;
+            }
+
+            elsif ($lvl->{type} eq 'SSL' && $bar->{low} < $price) {
+                $lvl->{state}         = 'Swept';
+                $lvl->{swept_index}   = $i;
+                $lvl->{outside_count} = 0;
+            }
+        }
+
+        next if $lvl->{state} eq 'Detected';
+
+        my $bars_after_sweep = $i - $lvl->{swept_index};
+
+        if ($lvl->{type} eq 'BSL') {
+
+            if ($bar->{close} < $price) {
+                $lvl->{state}          = 'Reclaimed';
+                $lvl->{resolved_index} = $i;
+                $lvl->{classification} = $bars_after_sweep == 0 ? 'Sweep' : 'Grab';
+
+                $lvl->{state} = 'Resolved';
+                next;
+            }
+
+            if ($bar->{close} > $price) {
+                $lvl->{state} = 'Acceptance';
+                $lvl->{outside_count}++;
+
+                if ($lvl->{outside_count} >= $self->{confirm_bars}) {
+                    $lvl->{resolved_index} = $i;
+                    $lvl->{classification} = 'Run';
+                    $lvl->{state}          = 'Resolved';
+                    next;
+                }
+            }
+        }
+
+        elsif ($lvl->{type} eq 'SSL') {
+
+            if ($bar->{close} > $price) {
+                $lvl->{state}          = 'Reclaimed';
+                $lvl->{resolved_index} = $i;
+                $lvl->{classification} = $bars_after_sweep == 0 ? 'Sweep' : 'Grab';
+
+                $lvl->{state} = 'Resolved';
+                next;
+            }
+
+            if ($bar->{close} < $price) {
+                $lvl->{state} = 'Acceptance';
+                $lvl->{outside_count}++;
+
+                if ($lvl->{outside_count} >= $self->{confirm_bars}) {
+                    $lvl->{resolved_index} = $i;
+                    $lvl->{classification} = 'Run';
+                    $lvl->{state}          = 'Resolved';
+                    next;
+                }
+            }
+        }
+    }
 }
 
 1;

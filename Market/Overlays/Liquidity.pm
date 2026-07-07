@@ -1,131 +1,146 @@
 package Market::Overlays::Liquidity;
+
 use strict;
 use warnings;
-use parent 'Market::Overlays::Base';
+
+=head1 NOMBRE
+
+Market::Overlays::Liquidity - Capa visual encargada de dibujar los niveles
+de liquidez (BSL / SSL) y los niveles de igualdad (EQH / EQL) calculados por
+Market::Indicators::Liquidity, sobre el canvas principal de velas.
+
+Esta clase está adaptada a la arquitectura de escalas de TradeViewReplica
+(Market::Panels::Scales), que ya conoce internamente el rango de precios
+visible y el mapeo índice->x, por lo que basta con invocar:
+
+    $scale->index_to_center_x($index)
+    $scale->value_to_y($price)
+
+=cut
 
 sub new {
     my ($class, %args) = @_;
 
-    my $self = $class->SUPER::new(%args);
+    my $self = {
+        liq_result => $args{liq_result},
+        show_bsl   => $args{show_bsl} // 1,
+        show_ssl   => $args{show_ssl} // 1,
+        show_eqh   => $args{show_eqh} // 1,
+        show_eql   => $args{show_eql} // 1,
+    };
 
-    # Colores visuales para los niveles de liquidez
-    $self->{bsl_color}   = '#ef5350';
-    $self->{ssl_color}   = '#26a69a';
-    $self->{sweep_color} = '#ff9800';
-    $self->{grab_color}  = '#ff9800';
-    $self->{run_color}   = '#2962ff';
-
-    # Líneas un poco más finas visualmente, parecidas a LuxAlgo
-    $self->{dash_style}  = [5, 5];
-
-    return $self;
+    return bless $self, $class;
 }
 
-sub render {
-    my ($self, $start_index, $end_index, $scale) = @_;
+=head2 set_result($liq_result)
 
-    my $canvas = $self->{canvas};
-    return unless $canvas;
-    return unless $scale;
+Actualiza el resultado calculado por el motor de liquidez.
 
-    # Limpiar solo la capa de liquidez
-    $canvas->delete('liquidity_layer');
+=cut
 
-    return unless $self->{active} // 1;
+sub set_result {
+    my ($self, $liq_result) = @_;
+    $self->{liq_result} = $liq_result;
+}
 
-    # Validar que exista el engine y el manager
-    return unless $self->{engine};
-    return unless $self->{engine}->{indicator_manager};
+=head2 draw($canvas, $scale, $start, $end)
 
-    # IMPORTANTE:
-    # IndicatorManager->get('Liquidity') ya devuelve get_values(),
-    # es decir, el arreglo de eventos de Liquidity.
-    my $events = $self->{engine}->{indicator_manager}->get('Liquidity');
-    return unless $events && ref($events) eq 'ARRAY';
+Dibuja los niveles de liquidez visibles entre los índices [$start, $end].
 
-    foreach my $event (@$events) {
-        next unless $event && ref($event) eq 'HASH';
+=cut
 
-        my $event_index = $event->{index};
-        my $price       = $event->{price};
-        my $type        = $event->{type}  || '';
-        my $state       = $event->{state} || '';
+sub draw {
+    my ($self, $canvas, $scale, $start, $end) = @_;
 
-        # Validaciones mínimas para evitar errores de render
-        next unless defined $event_index;
-        next unless defined $price;
-        next unless $type eq 'BSL' || $type eq 'SSL';
+    return unless $self->{liq_result} && $canvas && $scale;
 
-        # No dibujar eventos que todavía no deberían existir en Replay
-        next if $event_index > $end_index;
+    my $right_limit = ($canvas->Width() || 0) - 2;
+    $right_limit = 0 if $right_limit < 0;
 
-        # Opcional: no dibujar eventos muy antiguos fuera de la ventana visible
-        # si ya fueron resueltos antes del inicio visible.
-        if (defined $event->{resolved_at} && $event->{resolved_at} < $start_index) {
-            next;
-        }
+    $self->_draw_bsl_ssl($canvas, $scale, $start, $end, $right_limit);
+    $self->_draw_eqh_eql($canvas, $scale, $start, $end, $right_limit);
+}
 
-        my $x_start = $scale->index_to_center_x($event_index);
-        my $y       = $scale->value_to_y($price);
+sub _draw_bsl_ssl {
+    my ($self, $canvas, $scale, $start, $end, $right_limit) = @_;
 
-        # Si el evento ya fue resuelto, la línea termina en resolved_at.
-        # Si aún está activo, se extiende hasta la última vela visible.
-        my $end_draw_index = defined $event->{resolved_at}
-            ? $event->{resolved_at}
-            : $end_index;
+    my $levels = $self->{liq_result}->{liquidity} || [];
 
-        $end_draw_index = $end_index if $end_draw_index > $end_index;
+    for my $lvl (@$levels) {
+        my $created_index  = $lvl->{created_index} // $lvl->{index};
+        my $resolved_index = $lvl->{resolved_index};
+        my $draw_end_index = defined $resolved_index ? $resolved_index : $end;
 
-        my $x_end = $scale->index_to_center_x($end_draw_index);
+        next if $draw_end_index < $start;
+        next if $created_index > $end;
 
-        # Color base según tipo de liquidez
-        my $line_color = $type eq 'BSL'
-            ? $self->{bsl_color}
-            : $self->{ssl_color};
+        next if $lvl->{type} eq 'BSL' && !$self->{show_bsl};
+        next if $lvl->{type} eq 'SSL' && !$self->{show_ssl};
 
-        # Dibujar línea BSL / SSL
+        my $x1 = $scale->index_to_center_x($lvl->{index});
+        my $x2 = $scale->index_to_center_x($draw_end_index);
+        $x2 = $right_limit if $x2 > $right_limit;
+
+        my $y = $scale->value_to_y($lvl->{price});
+        my $color = $lvl->{type} eq 'BSL' ? '#f23645' : '#089981';
+
         $canvas->createLine(
-            $x_start, $y,
-            $x_end,   $y,
-            -dash => $self->{dash_style},
-            -fill => $line_color,
-            -width => 1,
-            -tags => ['liquidity_layer']
+            $x1, $y,
+            $x2, $y,
+            -fill  => $color,
+            -dash  => [4, 4],
+            -width => 1
         );
 
-        # Etiqueta base: BSL o SSL mientras está detectado
-        my $label_text = $type;
-
-        # Etiquetas según máquina de estados de Ricardo
-        if ($state eq 'SWEEP_UP' || $state eq 'SWEEP_DOWN') {
-            $label_text = 'SWEEP';
-        }
-        elsif ($state eq 'SWEEP') {
-            $label_text = 'SWEEP';
-            $line_color = $self->{sweep_color};
-        }
-        elsif ($state eq 'GRAB') {
-            $label_text = 'LQ GRAB';
-            $line_color = $self->{grab_color};
-        }
-        elsif ($state eq 'RUN') {
-            $label_text = 'LQ RUN';
-            $line_color = $self->{run_color};
-        }
-
-        # Mostrar etiqueta al final de la línea
-        my $label_y = $type eq 'BSL' ? $y - 10 : $y + 10;
-
         $canvas->createText(
-            $x_end + 5,
-            $label_y,
-            -text   => $label_text,
-            -fill   => $line_color,
-            -font   => ['Helvetica', 6, 'bold'],
-            -anchor => 'w',
-            -tags   => ['liquidity_layer']
+            $x2 - 4,
+            $y - 8,
+            -text   => $lvl->{type},
+            -fill   => $color,
+            -font   => ['Arial', 8, 'bold'],
+            -anchor => 'e'
         );
     }
 }
 
-1;  
+sub _draw_eqh_eql {
+    my ($self, $canvas, $scale, $start, $end, $right_limit) = @_;
+
+    my $equals = $self->{liq_result}->{equal_levels} || [];
+
+    for my $eq (@$equals) {
+        next if $eq->{index2} < $start;
+        next if $eq->{index1} > $end;
+
+        next if $eq->{type} eq 'EQH' && !$self->{show_eqh};
+        next if $eq->{type} eq 'EQL' && !$self->{show_eql};
+
+        my $x1 = $scale->index_to_center_x($eq->{index1});
+        my $x2 = $scale->index_to_center_x($eq->{index2});
+        $x2 = $right_limit if $x2 > $right_limit;
+
+        my $y = $scale->value_to_y($eq->{price});
+        my $color = $eq->{type} eq 'EQH' ? '#d32f2f' : '#00796b';
+
+        $canvas->createLine(
+            $x1, $y,
+            $x2, $y,
+            -fill  => $color,
+            -dash  => [2, 3],
+            -width => 1
+        );
+
+        my $label_x = ($x1 + $x2) / 2;
+
+        $canvas->createText(
+            $label_x,
+            $y + ($eq->{type} eq 'EQH' ? -10 : 10),
+            -text   => $eq->{type},
+            -fill   => $color,
+            -font   => ['Arial', 8, 'bold'],
+            -anchor => 'center'
+        );
+    }
+}
+
+1;
