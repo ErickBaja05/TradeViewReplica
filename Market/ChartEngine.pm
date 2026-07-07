@@ -1014,4 +1014,85 @@ sub set_auto_scale {
     }
 }
 
+
+# --- 2. NUEVOS MÉTODOS DE GESTIÓN DE OVERLAYS ---
+sub add_overlay {
+    my ($self, $overlay) = @_;
+    push @{$self->{overlays}}, $overlay;
+}
+
+# --- 3. NUEVOS MÉTODOS DE REPLAY QUE SE LLAMAN DESDE MARKET.PL ---
+sub toggle_replay_mode {
+    my ($self, $start_index) = @_;
+    my $md = $self->{market_data};
+    
+    if ($md->is_replay_active()) {
+        $self->pause_replay();
+        $md->set_replay_mode(0);
+    } else {
+        # Por defecto, iniciamos el replay 100 velas atrás si no se especifica
+        $start_index //= ($md->size() > 100) ? $md->size() - 100 : 0;
+        $md->set_replay_mode(1, $start_index);
+    }
+    
+    # Forzamos el offset a 0 para anclarnos a la "vela actual" simulada
+    $self->{offset} = 0;
+    $self->request_render();
+}
+
+sub play_replay {
+    my ($self) = @_;
+    return unless $self->{market_data}->is_replay_active();
+    return if defined $self->{replay_timer_id}; # Evitar múltiples loops
+    
+    my $mw = $self->{widgets}->{main_window};
+    
+    # Callback recursivo para el Play
+    my $step_cb;
+    $step_cb = sub {
+        my $advanced = $self->{market_data}->step_forward();
+        if ($advanced) {
+            $self->request_render();
+            # Notificamos a los indicadores que se actualicen
+            $self->{indicator_manager}->update_last($self->{market_data});
+            
+            # Programamos el siguiente tick
+            $self->{replay_timer_id} = $mw->after($self->{replay_speed}, $step_cb);
+        } else {
+            $self->pause_replay(); # Llegamos al final
+        }
+    };
+    
+    # Iniciamos el primer tick
+    $self->{replay_timer_id} = $mw->after($self->{replay_speed}, $step_cb);
+}
+
+sub pause_replay {
+    my ($self) = @_;
+    if (defined $self->{replay_timer_id}) {
+        my $mw = $self->{widgets}->{main_window};
+        $mw->afterCancel($self->{replay_timer_id});
+        $self->{replay_timer_id} = undef;
+    }
+}
+
+sub step_forward {
+    my ($self) = @_;
+    $self->pause_replay(); # El paso manual pausa la reproducción automática
+    if ($self->{market_data}->step_forward()) {
+        $self->{indicator_manager}->update_last($self->{market_data});
+        $self->request_render();
+    }
+}
+
+sub step_backward {
+    my ($self) = @_;
+    $self->pause_replay();
+    if ($self->{market_data}->step_backward()) {
+        # Al retroceder, idealmente deberías regenerar o usar un snapshot de memoria 
+        # en SMC_Structures, pero renderizar hacia atrás funciona para la vista.
+        $self->request_render();
+    }
+}
+
 1;
