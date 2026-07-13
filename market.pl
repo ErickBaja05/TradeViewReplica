@@ -81,6 +81,7 @@ my %vars = (
     show_eqh          => 0,
     show_eql          => 0,
     show_fibonacci    => 0,
+    show_levels       => 0,
 
     show_zigzag_int   => 0,
     show_bos_int      => 0,
@@ -122,6 +123,7 @@ my @groups = (
             ["EQH",                       "show_eqh",         "#26a69a"],
             ["EQL",                       "show_eql",         "#ef5350"],
             ["Fibonacci",                 "show_fibonacci",   "#9c27b0"],
+            ["Levels",                    "show_levels",      "#2962ff"],
         ],
     },
     {

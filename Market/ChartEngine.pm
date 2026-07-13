@@ -16,6 +16,7 @@ use Market::Indicators::OrderBlocks;
 use Market::Indicators::VWAPAnchored;
 use Market::Indicators::VolumeProfileAnchored;
 use Market::Indicators::Fibonacci;
+use Market::Indicators::Levels;
 
 use Market::Overlays::Zigzag_External;
 use Market::Overlays::Zigzag_Internal;
@@ -34,6 +35,7 @@ use Market::Overlays::OrderBlocks;
 use Market::Overlays::VWAPAnchored;
 use Market::Overlays::VolumeProfileAnchored;
 use Market::Overlays::Fibonacci;
+use Market::Overlays::Levels;
 
 =head1 NOMBRE
 Market::ChartEngine - Motor gráfico central y orquestador de la interfaz.
@@ -84,6 +86,7 @@ sub new {
         show_eqh          => 0,
         show_eql          => 0,
         show_fibonacci    => 0,
+        show_levels       => 0,
 
         show_bsl          => 0,
         show_ssl          => 0,
@@ -140,6 +143,11 @@ sub new {
         # Niveles de Fibonacci calculados sobre la altura del último tramo
         # (leg) del ZigZag Externo (smc_engine).
         fibonacci_engine  => Market::Indicators::Fibonacci->new(),
+        # Niveles de Soporte/Resistencia calculados sobre los mismos
+        # pivotes estructurales del ZigZag Externo (smc_engine).
+        levels_engine     => Market::Indicators::Levels->new(
+            max_levels => 6,
+        ),
         supertrend_engine => Market::Indicators::Supertrend->new(
             period     => 10,
             multiplier => 3.0,
@@ -174,6 +182,7 @@ sub new {
         eqh_overlay              => Market::Overlays::EQH->new(),
         eql_overlay              => Market::Overlays::EQL->new(),
         fibonacci_overlay        => Market::Overlays::Fibonacci->new(),
+        levels_overlay           => Market::Overlays::Levels->new(),
         
         liquidity_overlay        => Market::Overlays::Liquidity->new(),
         supertrend_overlay       => Market::Overlays::Supertrend->new(),
@@ -268,6 +277,7 @@ sub render {
      || $self->{show_choch_ext} || $self->{show_choch_int}
      || $self->{show_eqh} || $self->{show_eql}
      || $self->{show_fibonacci}
+     || $self->{show_levels}
      || $self->{show_fvg}
      || $self->{show_bsl} || $self->{show_ssl}
      || $self->{show_lq_sweep} || $self->{show_lq_grab} || $self->{show_lq_run}
@@ -325,6 +335,9 @@ sub render {
 
             $self->{fibonacci_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
                 if $self->{show_fibonacci};
+
+            $self->{levels_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_levels};
 
             # Order Blocks (Supply/Demand): franjas, se dibujan junto a las
             # demás cajas (FVG) para quedar bajo las líneas de estructura.
@@ -449,6 +462,15 @@ sub update_smc_overlay {
         $smc_result->{structure}
     );
 
+    # Levels: Soporte/Resistencia sobre los mismos pivotes estructurales
+    # ($smc_result->{structure}), usando el historial completo de velas
+    # para detectar rupturas por cierre.
+    my $levels_result = $self->{levels_engine}->calculate_until(
+        $smc_result->{structure},
+        $candles_full,
+        $until_index
+    );
+
     $self->{zigzag_ext_overlay}->set_result($smc_result);
     $self->{zigzag_int_overlay}->set_result($liq_result);
     $self->{liquidity_overlay}->set_result($liq_result);
@@ -463,6 +485,7 @@ sub update_smc_overlay {
     $self->{eql_overlay}->set_result($structure_result);
 
     $self->{fibonacci_overlay}->set_result($fibonacci_result);
+    $self->{levels_overlay}->set_result($levels_result);
 
     $self->{fvg_overlay}->set_result($fvg_result);
 
