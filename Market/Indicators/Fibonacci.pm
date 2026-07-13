@@ -64,8 +64,8 @@ sub calculate {
 
     return { levels => [] } unless $structure && ref($structure) eq 'ARRAY' && @$structure >= 2;
 
-    my $last = $structure->[-1];
-    my $prev = $structure->[-2];
+    my $last = $structure->[-2];
+    my $prev = $structure->[-3];
 
     return { levels => [] } unless defined $last->{price} && defined $prev->{price};
 

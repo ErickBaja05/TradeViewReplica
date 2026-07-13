@@ -85,7 +85,7 @@ sub draw {
         next if $draw_end_index < $start;
         next if $z->{left_index} > $end;
 
-        my $x1 = $scale->index_to_x($z->{left_index});
+        my $x1 = $scale->index_to_x($z->{left_index} + 2);
         my $x2 = $scale->index_to_x($draw_end_index + 1);
         $x2 = $right_limit if $x2 > $right_limit;
 
@@ -116,7 +116,7 @@ sub draw {
             $x1, $y1, $x2, $y2,
             -fill    => $fill,
             -outline => $outline,
-            -stipple => 'gray25',
+
             -width   => 1,
         );
 
@@ -129,8 +129,8 @@ sub draw {
             $canvas->createText(
                 $x1 + 4, ($y1 + $y2) / 2,
                 -text   => $label_text,
-                -fill   => $label_color,
-                -font   => ['Arial', 7, 'bold'],
+                -fill   => '#000000',
+                -font   => ['Arial', 10, 'bold'],
                 -anchor => 'w',
             );
         }

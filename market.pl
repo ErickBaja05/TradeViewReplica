@@ -13,6 +13,7 @@ use Market::Indicators::ATR;
 #   FASES DE EJECUCIÓN CENTRAL (MARKET.PL)
 # =========================================================================
 
+
 my $mw = MainWindow->new();
 $mw->title("Replica Financiera TradingView - EPN");
 

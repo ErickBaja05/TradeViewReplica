@@ -26,7 +26,7 @@ Replica visualmente el bloque "Supply/Demand Zone" del PineScript original:
 my %COLORS = (
     SUPPLY_FILL    => '#f0d908',
     SUPPLY_OUTLINE => '#ffffff',
-    DEMAND_FILL    => '#0b2ce7',
+    DEMAND_FILL    => '#0b9ee7',
     DEMAND_OUTLINE => '#ffffff',
 );
 
@@ -99,7 +99,6 @@ sub draw {
             $x1, $y1, $x2, $y2,
             -fill    => $fill,
             -outline => $outline,
-            -stipple => 'gray25',
             -width   => 1,
         );
 
@@ -107,8 +106,8 @@ sub draw {
             $canvas->createText(
                 ($x1 + $x2) / 2, ($y1 + $y2) / 2,
                 -text   => $label_text,
-                -fill   => $z->{type} eq 'SUPPLY' ? '#616161' : '#008b8b',
-                -font   => ['Arial', 7, 'bold'],
+                -fill   => '#000000',
+                -font   => ['Arial', 10, 'bold'],
                 -anchor => 'center',
             );
         }
