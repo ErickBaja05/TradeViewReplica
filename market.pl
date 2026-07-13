@@ -220,17 +220,33 @@ for my $group (@groups) {
     $menu->separator unless $gname eq $groups[-1]->{name};
 }
 
+# Espaciador estético intermedio
+$control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
+
+my $anchor_menu = $control_panel->Menubutton(
+    -text             => "Anchored Indicators",
+    -bg               => '#ffffff',
+    -fg               => '#131722',
+    -activebackground => '#75bbfd',
+    -activeforeground => 'white',
+    -relief           => 'raised',
+    -cursor           => 'hand2',
+)->pack(-side => 'left', -padx => 5);
+
+my $menu2 = $anchor_menu->Menu(-tearoff => 0);
+$anchor_menu->configure(-menu => $menu2);
+
 # ── VWAP Anclado (Anchored VWAP) ────────────────────────────────────
 # A diferencia del resto de indicadores, este no se activa/desactiva de
 # forma directa: al marcarlo, el usuario debe hacer click sobre la vela
 # que quiere usar como ancla (igual que la herramienta de TradingView).
-$menu->separator;
-$menu->checkbutton(
+
+$menu2->checkbutton(
     -label            => "    VWAP Anclado (click en vela)",
     -variable         => \$vars{show_vwap_anchored},
-    -foreground       => '#2962ff',
-    -activeforeground => '#2962ff',
-    -selectcolor      => '#2962ff',
+    -foreground       => '#ff8800',
+    -activeforeground => '#ff8800',
+    -selectcolor      => '#ff8800',
     -command          => sub {
         return unless $chart_engine;
 
@@ -254,12 +270,12 @@ $menu->checkbutton(
 # ── Volume Profile Anclado (Anchored Volume Profile, 1 sigma) ──────
 # Igual que el VWAP Anclado: al marcarlo, el usuario debe hacer click sobre
 # la vela que quiere usar como ancla del histograma de volumen.
-$menu->checkbutton(
+$menu2->checkbutton(
     -label            => "    Volume Profile Anclado (click en vela)",
     -variable         => \$vars{show_volume_profile_anchored},
-    -foreground       => '#ff9800',
-    -activeforeground => '#ff9800',
-    -selectcolor      => '#ff9800',
+    -foreground       => '#2962ff',
+    -activeforeground => '#2962ff',
+    -selectcolor      => '#2962ff',
     -command          => sub {
         return unless $chart_engine;
 

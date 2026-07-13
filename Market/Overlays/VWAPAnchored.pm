@@ -17,10 +17,10 @@ atrás), tal como en TradingView.
 
 =cut
 
-my $LINE_COLOR   = '#2962ff';   # azul (línea central vwap)
-my $BAND_COLOR   = '#2962ff';   # azul (líneas de banda)
-my $BAND_FILL    = '#2962ff';   # relleno del canal (semitransparente via stipple)
-my $ANCHOR_COLOR = '#ff9800';   # naranja (marcador de ancla)
+my $LINE_COLOR   = '#ff8800';   # azul (línea central vwap)
+my $BAND_COLOR   = '#ff8800';   # azul (líneas de banda)
+my $BAND_FILL    = '#ff8800';   # relleno del canal (semitransparente via stipple)
+my $ANCHOR_COLOR = '#fffb00';   # naranja (marcador de ancla)
 
 sub new {
     my ($class, %args) = @_;
