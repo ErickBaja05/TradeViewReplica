@@ -25,8 +25,8 @@ sub new {
         show       => $args{show} // 1,
         show_high  => $args{show_high} // 1,
         show_low   => $args{show_low} // 1,
-        color_high => $args{color_high} // '#4d0a47',
-        color_low  => $args{color_low}  // '#059baf',
+        color_high => $args{color_high} // '#00ff0d',
+        color_low  => $args{color_low}  // '#ff0000',
         radius     => $args{radius} // 4,
     };
 
@@ -162,41 +162,41 @@ sub draw {
         }
     }
 
-    #
-    # Dibujar pivotes y etiquetas
-    #
-    # for my $p (@visible_points) {
+    
+    #Dibujar pivotes y etiquetas
+    
+    for my $p (@visible_points) {
 
-    #     next if $p->{x} > $right_limit;
+        next if $p->{x} > $right_limit;
 
-    #     my $is_high = $p->{type} eq 'HIGH';
+        my $is_high = $p->{type} eq 'HIGH';
 
-    #     my $color = $is_high
-    #         ? $self->{color_high}
-    #         : $self->{color_low};
+        my $color = $is_high
+            ? $self->{color_high}
+            : $self->{color_low};
 
-    #     my $r = $self->{radius};
+        my $r = $self->{radius};
 
-    #     $canvas->createOval(
-    #         $p->{x} - $r,
-    #         $p->{y} - $r,
-    #         $p->{x} + $r,
-    #         $p->{y} + $r,
-    #         -outline => $color,
-    #         -fill    => $color,
-    #     );
+        $canvas->createOval(
+            $p->{x} - $r,
+            $p->{y} - $r,
+            $p->{x} + $r,
+            $p->{y} + $r,
+            -outline => $color,
+            -fill    => $color,
+        );
 
-    #     my $dy = $is_high ? -14 : 14;
+        my $dy = $is_high ? -14 : 14;
 
-    #     $canvas->createText(
-    #         $p->{x},
-    #         $p->{y} + $dy,
-    #         -text   => $is_high ? 'SH' : 'SL',
-    #         -fill   => $color,
-    #         -font   => ['Arial', 7, 'bold'],
-    #         -anchor => 'center',
-    #     );
-    # }
+        $canvas->createText(
+            $p->{x},
+            $p->{y} + $dy,
+            -text   => $is_high ? 'SH' : 'SL',
+            -fill   => $color,
+            -font   => ['Arial', 7, 'bold'],
+            -anchor => 'center',
+        );
+    }
 }
 
 1;
