@@ -62,6 +62,9 @@ sub new {
         manual_y_max      => 100,    
         manual_y_min      => 0,      
 
+        # Mostrar/ocultar la línea + etiqueta del último precio visible
+        show_last_price   => 1,
+
         # Estado de Escalas ATR (Volatilidad)
         atr_auto_scale    => 1,
         atr_manual_y_max  => 10,

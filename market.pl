@@ -279,6 +279,28 @@ $menu->checkbutton(
 # Espaciador estético intermedio
 $control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
 
+# Checkbutton para mostrar/ocultar la línea + etiqueta del último precio visible
+my $show_last_price_var = 1;
+$control_panel->Checkbutton(
+    -text             => "Ultimo Precio",
+    -variable         => \$show_last_price_var,
+    -bg               => '#fbfcf8',
+    -fg               => '#000000',
+    -activebackground => '#fbfcf8',
+    -activeforeground => '#000000',
+    -selectcolor      => '#000000',
+    -font             => 'Arial 10 bold',
+    -cursor           => 'hand2',
+    -command          => sub {
+        return unless $chart_engine;
+        $chart_engine->{show_last_price} = $show_last_price_var;
+        $chart_engine->request_render();
+    },
+)->pack(-side => 'left', -padx => 5);
+
+# Espaciador estético intermedio
+$control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
+
 # Botón dinámico para conmutar el Modo de Escala (Auto / Manual)
 my $scale_btn;
 $scale_btn = $control_panel->Button(

@@ -119,7 +119,8 @@ sub render {
     
     $self->draw_time_axis();
     $self->_init_crosshair_objects();
-    $self->render_last_visible_price($data_slice, $scale);
+    $self->render_last_visible_price($data_slice, $scale)
+        if !defined $self->{engine}->{show_last_price} || $self->{engine}->{show_last_price};
 }
 
 sub _init_crosshair_objects {
