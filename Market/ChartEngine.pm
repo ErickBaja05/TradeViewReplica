@@ -11,9 +11,11 @@ use Market::Indicators::FVG;
 use Market::Indicators::Structure;
 use Market::Indicators::Supertrend;
 use Market::Indicators::HalfTrend;
+use Market::Indicators::Channel;
 use Market::Indicators::OrderBlocks;
 use Market::Indicators::VWAPAnchored;
 use Market::Indicators::VolumeProfileAnchored;
+use Market::Indicators::Fibonacci;
 
 use Market::Overlays::Zigzag_External;
 use Market::Overlays::Zigzag_Internal;
@@ -27,9 +29,11 @@ use Market::Overlays::EQL;
 use Market::Overlays::Liquidity;
 use Market::Overlays::Supertrend;
 use Market::Overlays::HalfTrend;
+use Market::Overlays::Channel;
 use Market::Overlays::OrderBlocks;
 use Market::Overlays::VWAPAnchored;
 use Market::Overlays::VolumeProfileAnchored;
+use Market::Overlays::Fibonacci;
 
 =head1 NOMBRE
 Market::ChartEngine - Motor gráfico central y orquestador de la interfaz.
@@ -79,7 +83,8 @@ sub new {
         show_choch_int    => 0,
         show_eqh          => 0,
         show_eql          => 0,
-        show_fvg          => 0,
+        show_fibonacci    => 0,
+
         show_bsl          => 0,
         show_ssl          => 0,
         show_lq_sweep     => 0,
@@ -87,7 +92,9 @@ sub new {
         show_lq_run       => 0,
         show_supertrend   => 0,
         show_halftrend    => 0,
+        show_fvg          => 0,
         show_orderblocks  => 0,
+        show_channel      => 0,
         smc_cache_key     => undef,
 
         # --- VWAP Anclado (Anchored VWAP + banda de 2 sigma) ---
@@ -130,6 +137,9 @@ sub new {
             eq_len        => 3,
             eq_threshold  => 0.1,
         ),
+        # Niveles de Fibonacci calculados sobre la altura del último tramo
+        # (leg) del ZigZag Externo (smc_engine).
+        fibonacci_engine  => Market::Indicators::Fibonacci->new(),
         supertrend_engine => Market::Indicators::Supertrend->new(
             period     => 10,
             multiplier => 3.0,
@@ -146,6 +156,9 @@ sub new {
             box_width       => 2.5,
             atr_period      => 50,
         ),
+        channel_engine  => Market::Indicators::Channel->new(
+
+        ),
         vwap_anchored_engine => Market::Indicators::VWAPAnchored->new(
             std_mult => 1,
         ),
@@ -160,11 +173,14 @@ sub new {
         choch_int_overlay        => Market::Overlays::ChoCH_Internal->new(),
         eqh_overlay              => Market::Overlays::EQH->new(),
         eql_overlay              => Market::Overlays::EQL->new(),
-        fvg_overlay              => Market::Overlays::FVG->new(),
+        fibonacci_overlay        => Market::Overlays::Fibonacci->new(),
+        
         liquidity_overlay        => Market::Overlays::Liquidity->new(),
         supertrend_overlay       => Market::Overlays::Supertrend->new(),
         halftrend_overlay        => Market::Overlays::HalfTrend->new(),
+        fvg_overlay              => Market::Overlays::FVG->new(),
         orderblocks_overlay      => Market::Overlays::OrderBlocks->new(),
+        channel_overlay          => Market::Overlays::Channel->new(),
         vwap_anchored_overlay    => Market::Overlays::VWAPAnchored->new(),
         volume_profile_anchored_overlay => Market::Overlays::VolumeProfileAnchored->new(),
     };
@@ -251,10 +267,12 @@ sub render {
      || $self->{show_bos_ext} || $self->{show_bos_int}
      || $self->{show_choch_ext} || $self->{show_choch_int}
      || $self->{show_eqh} || $self->{show_eql}
+     || $self->{show_fibonacci}
      || $self->{show_fvg}
      || $self->{show_bsl} || $self->{show_ssl}
      || $self->{show_lq_sweep} || $self->{show_lq_grab} || $self->{show_lq_run}
-     || $self->{show_supertrend} || $self->{show_halftrend} || $self->{show_orderblocks}) {
+     || $self->{show_supertrend} || $self->{show_halftrend} 
+     || $self->{show_orderblocks} || $self->{show_channel}) {
         $self->update_smc_overlay($self->{market_data}->last_index());
 
         my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
@@ -276,6 +294,8 @@ sub render {
                 $self->{liquidity_overlay}->draw($self->{price_canvas}, $scale, $start, $end);
             }
 
+            $self->{channel_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_channel};
             $self->{fvg_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
                 if $self->{show_fvg};
             
@@ -302,6 +322,9 @@ sub render {
 
             $self->{eql_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
                 if $self->{show_eql};
+
+            $self->{fibonacci_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_fibonacci};
 
             # Order Blocks (Supply/Demand): franjas, se dibujan junto a las
             # demás cajas (FVG) para quedar bajo las líneas de estructura.
@@ -414,6 +437,18 @@ sub update_smc_overlay {
         $until_index
     );
 
+    my $channel_result = $self->{channel_engine}->calculate_until(
+        $candles_full,
+        $until_index
+    );
+
+    # Fibonacci: se calcula sobre la altura del último tramo (leg) del
+    # ZigZag Externo, es decir, entre los dos últimos pivotes de
+    # $smc_result->{structure} (la misma serie que dibuja zigzag_ext_overlay).
+    my $fibonacci_result = $self->{fibonacci_engine}->calculate(
+        $smc_result->{structure}
+    );
+
     $self->{zigzag_ext_overlay}->set_result($smc_result);
     $self->{zigzag_int_overlay}->set_result($liq_result);
     $self->{liquidity_overlay}->set_result($liq_result);
@@ -427,11 +462,14 @@ sub update_smc_overlay {
     $self->{eqh_overlay}->set_result($structure_result);
     $self->{eql_overlay}->set_result($structure_result);
 
+    $self->{fibonacci_overlay}->set_result($fibonacci_result);
+
     $self->{fvg_overlay}->set_result($fvg_result);
 
     $self->{supertrend_overlay}->set_result($supertrend_result);
     $self->{halftrend_overlay}->set_result($halftrend_result);
     $self->{orderblocks_overlay}->set_result($orderblocks_result);
+    $self->{channel_overlay}->set_result($channel_result);
 
     $self->{smc_cache_key} = $cache_key;
 }

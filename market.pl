@@ -80,6 +80,7 @@ my %vars = (
     show_choch_ext    => 0,
     show_eqh          => 0,
     show_eql          => 0,
+    show_fibonacci    => 0,
 
     show_zigzag_int   => 0,
     show_bos_int      => 0,
@@ -95,6 +96,7 @@ my %vars = (
     show_halftrend    => 0,
     show_fvg          => 0,
     show_orderblocks  => 0,
+    show_channel      => 0,
 
     show_vwap_anchored => 0,
     show_volume_profile_anchored => 0,
@@ -119,6 +121,7 @@ my @groups = (
             ["CHoCH Externo",             "show_choch_ext",   "#F23645"],
             ["EQH",                       "show_eqh",         "#26a69a"],
             ["EQL",                       "show_eql",         "#ef5350"],
+            ["Fibonacci",                 "show_fibonacci",   "#9c27b0"],
         ],
     },
     {
@@ -146,6 +149,7 @@ my @groups = (
             ["HalfTrend",                 "show_halftrend",   "#2962ff"],
             ["FVG",                       "show_fvg",         "#e91e63"],
             ["Order Blocks",              "show_orderblocks", "#f0d908"],
+            ["Channel",                   "show_channel",     "#337c4f"],
         ],
     },
 );
