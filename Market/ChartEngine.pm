@@ -12,6 +12,8 @@ use Market::Indicators::Structure;
 use Market::Indicators::Supertrend;
 use Market::Indicators::HalfTrend;
 use Market::Indicators::OrderBlocks;
+use Market::Indicators::VWAPAnchored;
+use Market::Indicators::VolumeProfileAnchored;
 
 use Market::Overlays::Zigzag_External;
 use Market::Overlays::Zigzag_Internal;
@@ -26,6 +28,8 @@ use Market::Overlays::Liquidity;
 use Market::Overlays::Supertrend;
 use Market::Overlays::HalfTrend;
 use Market::Overlays::OrderBlocks;
+use Market::Overlays::VWAPAnchored;
+use Market::Overlays::VolumeProfileAnchored;
 
 =head1 NOMBRE
 Market::ChartEngine - Motor gráfico central y orquestador de la interfaz.
@@ -83,6 +87,19 @@ sub new {
         show_orderblocks  => 0,
         smc_cache_key     => undef,
 
+        # --- VWAP Anclado (Anchored VWAP + banda de 2 sigma) ---
+        show_vwap_anchored         => 0,
+        vwap_anchor_index          => undef,
+        vwap_anchor_selection_mode => 0,   # 1 mientras se espera el click sobre la vela de ancla
+        vwap_cache_key             => undef,
+
+        # --- Volume Profile Anclado (histograma de volumen por precio con
+        #     zona de valor de 1 sigma) ---
+        show_volume_profile_anchored         => 0,
+        volume_profile_anchor_index          => undef,
+        volume_profile_anchor_selection_mode => 0, # 1 mientras se espera el click sobre la vela de ancla
+        volume_profile_cache_key             => undef,
+
         liquidity_engine  => Market::Indicators::Liquidity->new(
             atr_mult       => 4.0,
             minor_atr_mult => 1.5,
@@ -126,6 +143,12 @@ sub new {
             box_width       => 2.5,
             atr_period      => 50,
         ),
+        vwap_anchored_engine => Market::Indicators::VWAPAnchored->new(
+            std_mult => 1,
+        ),
+        volume_profile_anchored_engine => Market::Indicators::VolumeProfileAnchored->new(
+            num_bins => 24,
+        ),
         zigzag_ext_overlay       => Market::Overlays::Zigzag_External->new(),
         zigzag_int_overlay       => Market::Overlays::Zigzag_Internal->new(),
         bos_ext_overlay          => Market::Overlays::BOS_External->new(),
@@ -139,6 +162,8 @@ sub new {
         supertrend_overlay       => Market::Overlays::Supertrend->new(),
         halftrend_overlay        => Market::Overlays::HalfTrend->new(),
         orderblocks_overlay      => Market::Overlays::OrderBlocks->new(),
+        vwap_anchored_overlay    => Market::Overlays::VWAPAnchored->new(),
+        volume_profile_anchored_overlay => Market::Overlays::VolumeProfileAnchored->new(),
     };
 
     bless $self, $class;
@@ -291,6 +316,30 @@ sub render {
         }
     }
 
+    # --- VWAP Anclado: independiente de la caché de Liquidez/SMC, ya que
+    # depende de un ancla elegida manualmente por el usuario en lugar de la
+    # temporalidad o el último índice. ---
+    if ($self->{show_vwap_anchored} && defined $self->{vwap_anchor_index}) {
+        $self->update_vwap_anchored_overlay($self->{market_data}->last_index());
+
+        my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
+        if ($scale) {
+            $self->{vwap_anchored_overlay}->draw($self->{price_canvas}, $scale, $start, $end);
+        }
+    }
+
+    # --- Volume Profile Anclado: igual que el VWAP Anclado, es
+    # independiente de la caché de Liquidez/SMC porque depende de un ancla
+    # elegida manualmente por el usuario. ---
+    if ($self->{show_volume_profile_anchored} && defined $self->{volume_profile_anchor_index}) {
+        $self->update_volume_profile_anchored_overlay($self->{market_data}->last_index());
+
+        my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
+        if ($scale) {
+            $self->{volume_profile_anchored_overlay}->draw($self->{price_canvas}, $scale, $start, $end);
+        }
+    }
+
     if (defined $self->{crosshair_x} && defined $self->{crosshair_y}) {
         $self->draw_crosshair_all(
             $self->{crosshair_x}, 
@@ -384,6 +433,208 @@ sub update_smc_overlay {
     $self->{smc_cache_key} = $cache_key;
 }
 
+=head2 update_vwap_anchored_overlay($until_index)
+
+Calcula (con caché) la serie del VWAP Anclado desde la vela de ancla
+($self->{vwap_anchor_index}) hasta $until_index, y actualiza la capa visual.
+El caché evita recalcular en cada render (por ejemplo al mover el
+crosshair), recalculando sólo cuando cambia la temporalidad, el ancla o el
+índice de la última vela disponible (nueva vela recibida).
+
+=cut
+
+sub update_vwap_anchored_overlay {
+    my ($self, $until_index) = @_;
+    return unless defined $until_index && $until_index >= 0;
+
+    my $anchor_index = $self->{vwap_anchor_index};
+    return unless defined $anchor_index;
+
+    my $market_data = $self->{market_data};
+    my $tf = $market_data->{timeframe} // '1m';
+
+    my $cache_key = join(':', $tf, $anchor_index, $until_index);
+    return if defined $self->{vwap_cache_key} && $self->{vwap_cache_key} eq $cache_key;
+
+    my $candles_full = $market_data->get_slice(0, $until_index);
+
+    my $vwap_result = $self->{vwap_anchored_engine}->calculate_until(
+        $candles_full,
+        $anchor_index,
+        $until_index
+    );
+
+    $self->{vwap_anchored_overlay}->set_result($vwap_result);
+    $self->{vwap_cache_key} = $cache_key;
+}
+
+=head2 activate_vwap_anchor_selection()
+
+Activa el "modo de selección de ancla": la próxima vez que el usuario haga
+click sobre una vela del panel de precios, esa vela se usará como ancla del
+VWAP (igual que la herramienta "Anchored VWAP" de TradingView). Mientras
+este modo está activo, el arrastre normal (panning) queda desactivado y el
+cursor cambia para indicar que se espera un click de selección.
+
+=cut
+
+sub activate_vwap_anchor_selection {
+    my ($self) = @_;
+    $self->{vwap_anchor_selection_mode} = 1;
+
+    if (my $cv = $self->{price_canvas}) {
+        $cv->configure(-cursor => 'target');
+    }
+}
+
+=head2 cancel_vwap_anchor_selection()
+
+Cancela el modo de selección de ancla sin activar el indicador (por ejemplo
+al pulsar Escape). Devuelve el cursor del panel de precios a su estado
+normal.
+
+=cut
+
+sub cancel_vwap_anchor_selection {
+    my ($self) = @_;
+    $self->{vwap_anchor_selection_mode} = 0;
+
+    if (my $cv = $self->{price_canvas}) {
+        $cv->configure(-cursor => 'crosshair');
+    }
+}
+
+=head2 set_vwap_anchor($index)
+
+Fija la vela de ancla del VWAP a partir del índice global recibido (por
+ejemplo, resultado de un click sobre el panel de precios), activa el
+indicador y fuerza su recálculo.
+
+=cut
+
+sub set_vwap_anchor {
+    my ($self, $index) = @_;
+    return unless defined $index;
+
+    my $market_data = $self->{market_data};
+    my $last_index  = $market_data ? $market_data->last_index() : undef;
+    return unless defined $last_index;
+
+    $index = 0          if $index < 0;
+    $index = $last_index if $index > $last_index;
+
+    $self->{vwap_anchor_index}  = $index;
+    $self->{show_vwap_anchored} = 1;
+    $self->{vwap_cache_key}     = undef;   # fuerza recálculo inmediato
+
+    $self->cancel_vwap_anchor_selection();
+    $self->{on_vwap_anchor_set}->($index)
+        if ref($self->{on_vwap_anchor_set}) eq 'CODE';
+    $self->request_render();
+}
+
+=head2 update_volume_profile_anchored_overlay($until_index)
+
+Calcula (con caché) el histograma del Volume Profile Anclado desde la vela
+de ancla ($self->{volume_profile_anchor_index}) hasta $until_index, y
+actualiza la capa visual. El caché evita recalcular en cada render (por
+ejemplo al mover el crosshair), recalculando sólo cuando cambia la
+temporalidad, el ancla o el índice de la última vela disponible (nueva vela
+recibida).
+
+=cut
+
+sub update_volume_profile_anchored_overlay {
+    my ($self, $until_index) = @_;
+    return unless defined $until_index && $until_index >= 0;
+
+    my $anchor_index = $self->{volume_profile_anchor_index};
+    return unless defined $anchor_index;
+
+    my $market_data = $self->{market_data};
+    my $tf = $market_data->{timeframe} // '1m';
+
+    my $cache_key = join(':', $tf, $anchor_index, $until_index);
+    return if defined $self->{volume_profile_cache_key} && $self->{volume_profile_cache_key} eq $cache_key;
+
+    my $candles_full = $market_data->get_slice(0, $until_index);
+
+    my $vp_result = $self->{volume_profile_anchored_engine}->calculate_until(
+        $candles_full,
+        $anchor_index,
+        $until_index
+    );
+
+    $self->{volume_profile_anchored_overlay}->set_result($vp_result);
+    $self->{volume_profile_cache_key} = $cache_key;
+}
+
+=head2 activate_volume_profile_anchor_selection()
+
+Activa el "modo de selección de ancla" del Volume Profile: la próxima vez
+que el usuario haga click sobre una vela del panel de precios, esa vela se
+usará como ancla del histograma (igual que la herramienta "Anchored Volume
+Profile" de TradingView). Mientras este modo está activo, el arrastre
+normal (panning) queda desactivado y el cursor cambia para indicar que se
+espera un click de selección.
+
+=cut
+
+sub activate_volume_profile_anchor_selection {
+    my ($self) = @_;
+    $self->{volume_profile_anchor_selection_mode} = 1;
+
+    if (my $cv = $self->{price_canvas}) {
+        $cv->configure(-cursor => 'target');
+    }
+}
+
+=head2 cancel_volume_profile_anchor_selection()
+
+Cancela el modo de selección de ancla sin activar el indicador (por ejemplo
+al pulsar Escape). Devuelve el cursor del panel de precios a su estado
+normal.
+
+=cut
+
+sub cancel_volume_profile_anchor_selection {
+    my ($self) = @_;
+    $self->{volume_profile_anchor_selection_mode} = 0;
+
+    if (my $cv = $self->{price_canvas}) {
+        $cv->configure(-cursor => 'crosshair');
+    }
+}
+
+=head2 set_volume_profile_anchor($index)
+
+Fija la vela de ancla del Volume Profile a partir del índice global
+recibido (por ejemplo, resultado de un click sobre el panel de precios),
+activa el indicador y fuerza su recálculo.
+
+=cut
+
+sub set_volume_profile_anchor {
+    my ($self, $index) = @_;
+    return unless defined $index;
+
+    my $market_data = $self->{market_data};
+    my $last_index  = $market_data ? $market_data->last_index() : undef;
+    return unless defined $last_index;
+
+    $index = 0          if $index < 0;
+    $index = $last_index if $index > $last_index;
+
+    $self->{volume_profile_anchor_index}  = $index;
+    $self->{show_volume_profile_anchored} = 1;
+    $self->{volume_profile_cache_key}     = undef;   # fuerza recálculo inmediato
+
+    $self->cancel_volume_profile_anchor_selection();
+    $self->{on_volume_profile_anchor_set}->($index)
+        if ref($self->{on_volume_profile_anchor_set}) eq 'CODE';
+    $self->request_render();
+}
+
 sub bind_all_canvas {
     my ($self) = @_;
 
@@ -404,6 +655,23 @@ sub bind_all_canvas {
         $cv->Tk::bind('<Configure>', sub { $self->request_render(); });
         $cv->Tk::bind('<Motion>', sub { 
             my $widget = shift; my $e = $widget->XEvent; $self->on_mouse_move($e) if $e; 
+        });
+    }
+
+    # Click derecho: cancela la selección de vela de ancla del VWAP o del
+    # Volume Profile, si alguna está activa
+    if ($price_cv) {
+        $price_cv->Tk::bind('<Button-3>', sub {
+            if ($self->{vwap_anchor_selection_mode}) {
+                $self->cancel_vwap_anchor_selection();
+                $self->{on_vwap_selection_cancelled}->()
+                    if ref($self->{on_vwap_selection_cancelled}) eq 'CODE';
+            }
+            if ($self->{volume_profile_anchor_selection_mode}) {
+                $self->cancel_volume_profile_anchor_selection();
+                $self->{on_volume_profile_selection_cancelled}->()
+                    if ref($self->{on_volume_profile_selection_cancelled}) eq 'CODE';
+            }
         });
     }
 
@@ -448,14 +716,39 @@ sub bind_all_canvas {
     for my $canvas (grep { defined } ($price_cv, $atr_cv)) {
         $canvas->Tk::bind('<Button-1>', sub {
             my $widget = shift; my $e = $widget->XEvent;
-            if ($e) {
-                $self->{last_drag_x} = $e->x;
-                $self->{last_drag_y} = $e->y;
+            return unless $e;
+
+            # --- Selección de vela de ancla para el VWAP Anclado ---
+            # Si estamos esperando el click de anclaje (activado desde el
+            # menú de indicadores), el click sobre el panel de precios elige
+            # la vela y NO debe iniciar un arrastre/panning normal.
+            if ($self->{vwap_anchor_selection_mode} && $canvas == $price_cv) {
+                my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
+                if ($scale) {
+                    my $index = $scale->x_to_index($e->x);
+                    $self->set_vwap_anchor($index);
+                }
+                return;
             }
+
+            # --- Selección de vela de ancla para el Volume Profile Anclado ---
+            if ($self->{volume_profile_anchor_selection_mode} && $canvas == $price_cv) {
+                my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
+                if ($scale) {
+                    my $index = $scale->x_to_index($e->x);
+                    $self->set_volume_profile_anchor($index);
+                }
+                return;
+            }
+
+            $self->{last_drag_x} = $e->x;
+            $self->{last_drag_y} = $e->y;
         });
 
         $canvas->Tk::bind('<B1-Motion>', sub {
             my $widget = shift; my $e = $widget->XEvent;
+            return if $self->{vwap_anchor_selection_mode};
+            return if $self->{volume_profile_anchor_selection_mode};
             return unless $e && defined $self->{last_drag_x} && defined $self->{last_drag_y};
             
             $self->{crosshair_x} = $e->x;
@@ -650,6 +943,21 @@ sub bind_events {
 
     $mw->Tk::bind('<Key-r>', sub { $self->reset_view(); });
     $mw->Tk::bind('<Key-R>', sub { $self->reset_view(); });
+
+    # Escape cancela la selección de vela de ancla del VWAP o del Volume
+    # Profile, si alguna está activa
+    $mw->Tk::bind('<Key-Escape>', sub {
+        if ($self->{vwap_anchor_selection_mode}) {
+            $self->cancel_vwap_anchor_selection();
+            $self->{on_vwap_selection_cancelled}->()
+                if ref($self->{on_vwap_selection_cancelled}) eq 'CODE';
+        }
+        if ($self->{volume_profile_anchor_selection_mode}) {
+            $self->cancel_volume_profile_anchor_selection();
+            $self->{on_volume_profile_selection_cancelled}->()
+                if ref($self->{on_volume_profile_selection_cancelled}) eq 'CODE';
+        }
+    });
 }
 
 # =============================================================================

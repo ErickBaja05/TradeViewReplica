@@ -33,6 +33,10 @@ my $tf_label = $control_panel->Label(-text => "Temporalidad:", -bg => '#fbfcf8',
 # Declaración adelantada de la referencia del motor para usar en los callbacks
 my $chart_engine;
 
+# Declaración adelantada de la etiqueta de estado del VWAP Anclado (se crea
+# más abajo, pero se usa desde callbacks definidos antes en el archivo)
+my $vwap_status_label;
+
 my @temporalidades = ('1m', '5m', '15m', '1h', '2h', '4h', '1d');
 my $tf_seleccionada = '1m';
 
@@ -91,6 +95,9 @@ my %vars = (
     show_halftrend    => 0,
     show_fvg          => 0,
     show_orderblocks  => 0,
+
+    show_vwap_anchored => 0,
+    show_volume_profile_anchored => 0,
 );
 
 # Estructura agrupada: cada grupo tiene un nombre visible, una "master var"
@@ -209,6 +216,66 @@ for my $group (@groups) {
     $menu->separator unless $gname eq $groups[-1]->{name};
 }
 
+# ── VWAP Anclado (Anchored VWAP) ────────────────────────────────────
+# A diferencia del resto de indicadores, este no se activa/desactiva de
+# forma directa: al marcarlo, el usuario debe hacer click sobre la vela
+# que quiere usar como ancla (igual que la herramienta de TradingView).
+$menu->separator;
+$menu->checkbutton(
+    -label            => "    VWAP Anclado (click en vela)",
+    -variable         => \$vars{show_vwap_anchored},
+    -foreground       => '#2962ff',
+    -activeforeground => '#2962ff',
+    -selectcolor      => '#2962ff',
+    -command          => sub {
+        return unless $chart_engine;
+
+        if ($vars{show_vwap_anchored}) {
+            # El usuario acaba de marcarlo: en vez de activarlo de inmediato,
+            # entramos en modo de selección y esperamos su click sobre una vela.
+            $vwap_status_label->configure(-text => "VWAP: haz click en una vela para anclar (Esc/click-derecho cancela)")
+                if $vwap_status_label;
+            $chart_engine->activate_vwap_anchor_selection();
+        }
+        else {
+            # El usuario lo desmarcó: se oculta el indicador por completo.
+            $chart_engine->{show_vwap_anchored}         = 0;
+            $chart_engine->{vwap_anchor_selection_mode} = 0;
+            $vwap_status_label->configure(-text => "") if $vwap_status_label;
+            $chart_engine->request_render();
+        }
+    },
+);
+
+# ── Volume Profile Anclado (Anchored Volume Profile, 1 sigma) ──────
+# Igual que el VWAP Anclado: al marcarlo, el usuario debe hacer click sobre
+# la vela que quiere usar como ancla del histograma de volumen.
+$menu->checkbutton(
+    -label            => "    Volume Profile Anclado (click en vela)",
+    -variable         => \$vars{show_volume_profile_anchored},
+    -foreground       => '#ff9800',
+    -activeforeground => '#ff9800',
+    -selectcolor      => '#ff9800',
+    -command          => sub {
+        return unless $chart_engine;
+
+        if ($vars{show_volume_profile_anchored}) {
+            # El usuario acaba de marcarlo: entramos en modo de selección y
+            # esperamos su click sobre una vela.
+            $vwap_status_label->configure(-text => "Volume Profile: haz click en una vela para anclar (Esc/click-derecho cancela)")
+                if $vwap_status_label;
+            $chart_engine->activate_volume_profile_anchor_selection();
+        }
+        else {
+            # El usuario lo desmarcó: se oculta el indicador por completo.
+            $chart_engine->{show_volume_profile_anchored}         = 0;
+            $chart_engine->{volume_profile_anchor_selection_mode} = 0;
+            $vwap_status_label->configure(-text => "") if $vwap_status_label;
+            $chart_engine->request_render();
+        }
+    },
+);
+
 # Espaciador estético intermedio
 $control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
 
@@ -246,6 +313,12 @@ $control_panel->Button(
         # Sincronizamos el texto del botón de escala al volver a modo automático
         $scale_btn->configure(-text => "Escala: Auto", -fg => '#3bb3e4');
     }
+)->pack(-side => 'left', -padx => 10);
+
+# Etiqueta de estado para guiar al usuario mientras selecciona la vela de
+# ancla del VWAP (queda vacía el resto del tiempo)
+$vwap_status_label = $control_panel->Label(
+    -text => "", -bg => '#fbfcf8', -fg => '#2962ff', -font => 'Arial 9 bold'
 )->pack(-side => 'left', -padx => 10);
 
 
@@ -306,6 +379,32 @@ $chart_engine = Market::ChartEngine->new(
     atr_axis_canvas   => $atr_axis_canvas,   # Inyección del eje vertical de volatilidad
     widgets           => { main_window => $mw, scale_btn => $scale_btn }
 );
+
+# Callback invocado por el motor cuando la selección de ancla del VWAP se
+# cancela (tecla Escape o click-derecho) sin haber elegido ninguna vela:
+# sincronizamos el checkbutton y limpiamos el mensaje de estado.
+$chart_engine->{on_vwap_selection_cancelled} = sub {
+    $vars{show_vwap_anchored} = 0;
+    $vwap_status_label->configure(-text => "") if $vwap_status_label;
+};
+
+# Callback invocado cuando el usuario efectivamente ancla el VWAP en una
+# vela: limpiamos el mensaje de estado (el checkbutton ya queda marcado).
+$chart_engine->{on_vwap_anchor_set} = sub {
+    $vwap_status_label->configure(-text => "") if $vwap_status_label;
+};
+
+# Mismos callbacks para el Volume Profile Anclado, reutilizando la etiqueta
+# de estado compartida (sólo uno de los dos modos de selección puede estar
+# activo a la vez).
+$chart_engine->{on_volume_profile_selection_cancelled} = sub {
+    $vars{show_volume_profile_anchored} = 0;
+    $vwap_status_label->configure(-text => "") if $vwap_status_label;
+};
+
+$chart_engine->{on_volume_profile_anchor_set} = sub {
+    $vwap_status_label->configure(-text => "") if $vwap_status_label;
+};
 
 
 # 3. Tareas secuenciales requeridas por el documento de requerimientos
