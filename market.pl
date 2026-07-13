@@ -25,24 +25,188 @@ $mw->geometry("${width}x${height}+0+0");
 my $control_panel = $mw->Frame(-bg => '#fbfcf8', -relief => 'raised', -bd => 1)
                        ->pack(-side => 'top', -fill => 'x', -ipady => 4);
 
-# Control de Temporalidades (Requerimiento Avanzado del documento: 1m, 5m, 15m)
+# Control de Temporalidades (1m, 5m, 15m, 1h, 2h, 4h, 1d) mediante un menú
+# desplegable único, en lugar de un botón por cada temporalidad.
 my $tf_label = $control_panel->Label(-text => "Temporalidad:", -bg => '#fbfcf8', -fg => '#b1b5be', -font => 'Arial 10 bold')
                              ->pack(-side => 'left', -padx => 10);
 
-# Declaración adelantada de la referencia del motor para usar en los callbacks de los botones
+# Declaración adelantada de la referencia del motor para usar en los callbacks
 my $chart_engine;
 
-for my $tf ('1m', '5m', '15m') {
-    $control_panel->Button(
-        -text             => $tf,
-        -bg               => '#ffffff',
-        -fg               => '#131722',
-        -activebackground => '#75bbfd',
-        -activeforeground => 'white',
-        -relief           => 'flat',
-        -cursor           => 'hand2',
-        -command          => sub { $chart_engine->set_timeframe($tf) if $chart_engine; }
-    )->pack(-side => 'left', -padx => 3);
+my @temporalidades = ('1m', '5m', '15m', '1h', '2h', '4h', '1d');
+my $tf_seleccionada = '1m';
+
+my $tf_menu = $control_panel->Optionmenu(
+    -options          => \@temporalidades,
+    -variable         => \$tf_seleccionada,
+    -bg               => '#ffffff',
+    -fg               => '#131722',
+    -activebackground => '#75bbfd',
+    -activeforeground => 'white',
+    -relief           => 'raised',
+    -cursor           => 'hand2',
+    -command          => sub {
+        my ($valor) = @_;
+        $chart_engine->set_timeframe($valor) if $chart_engine && defined $valor;
+    },
+)->pack(-side => 'left', -padx => 3);
+
+# Espaciador estético intermedio
+$control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
+
+my $indicator_label = $control_panel->Label(-text => "Indicadores:", -bg => '#fbfcf8', -fg => '#b1b5be', -font => 'Arial 10 bold')
+                             ->pack(-side => 'left', -padx => 10);
+
+my $indicator_menu = $control_panel->Menubutton(
+    -text             => "Indicators",
+    -bg               => '#ffffff',
+    -fg               => '#131722',
+    -activebackground => '#75bbfd',
+    -activeforeground => 'white',
+    -relief           => 'raised',
+    -cursor           => 'hand2',
+)->pack(-side => 'left', -padx => 5);
+
+my $menu = $indicator_menu->Menu(-tearoff => 0);
+$indicator_menu->configure(-menu => $menu);
+
+my %vars = (
+    show_zigzag_ext   => 0,
+    show_bos_ext      => 0,
+    show_choch_ext    => 0,
+    show_eqh          => 0,
+    show_eql          => 0,
+
+    show_zigzag_int   => 0,
+    show_bos_int      => 0,
+    show_choch_int    => 0,
+
+    show_bsl          => 0,
+    show_ssl          => 0,
+    show_lq_sweep     => 0,
+    show_lq_grab      => 0,
+    show_lq_run       => 0,
+
+    show_supertrend   => 0,
+    show_halftrend    => 0,
+    show_fvg          => 0,
+    show_orderblocks  => 0,
+);
+
+# Estructura agrupada: cada grupo tiene un nombre visible, una "master var"
+# propia que controla el checkbutton maestro, y la lista de items (label, key, color)
+# que pertenecen a ese grupo.
+my %master_vars = (
+    Structure            => 0,
+    'Internal Structure' => 0,
+    Liquidity            => 0,
+    Strategy             => 0,
+);
+
+my @groups = (
+    {
+        name  => 'Structure',
+        items => [
+            ["ZigZag Externo",            "show_zigzag_ext",  "#2962ff"],
+            ["BOS Externo",               "show_bos_ext",     "#089981"],
+            ["CHoCH Externo",             "show_choch_ext",   "#F23645"],
+            ["EQH",                       "show_eqh",         "#26a69a"],
+            ["EQL",                       "show_eql",         "#ef5350"],
+        ],
+    },
+    {
+        name  => 'Internal Structure',
+        items => [
+            ["ZigZag Interno",            "show_zigzag_int",  "#00ff0d"],
+            ["BOS Interno",               "show_bos_int",     "#26a69a"],
+            ["CHoCH Interno",             "show_choch_int",   "#ef5350"],
+        ],
+    },
+    {
+        name  => 'Liquidity',
+        items => [
+            ["BSL (Buy Side Liquidity)",  "show_bsl",         "#ef5350"],
+            ["SSL (Sell Side Liquidity)", "show_ssl",         "#26a69a"],
+            ["LQ Sweep",                  "show_lq_sweep",    "#FF0044"],
+            ["LQ Grab",                   "show_lq_grab",     "#FF8C00"],
+            ["LQ Run",                    "show_lq_run",      "#2962FF"],
+        ],
+    },
+    {
+        name  => 'Strategy',
+        items => [
+            ["SuperTrend",                "show_supertrend",  "#26a69a"],
+            ["HalfTrend",                 "show_halftrend",   "#2962ff"],
+            ["FVG",                       "show_fvg",         "#e91e63"],
+            ["Order Blocks",              "show_orderblocks", "#f0d908"],
+        ],
+    },
+);
+
+# Sincroniza el estado del checkbutton maestro de un grupo en función de si
+# todos sus items individuales están activados (1) o no (0). Un estado mixto
+# se representa como 0 para evitar inducir a error visual.
+sub sync_master {
+    my ($group) = @_;
+    my $all_on = 1;
+    for my $item (@{ $group->{items} }) {
+        my (undef, $key) = @$item;
+        $all_on = 0 unless $vars{$key};
+    }
+    $master_vars{ $group->{name} } = $all_on ? 1 : 0;
+}
+
+for my $group (@groups) {
+    my $gname = $group->{name};
+
+    # ── Checkbutton maestro del grupo ───────────────────────────────
+    $menu->checkbutton(
+        -label            => "\x{25B8} $gname",
+        -variable         => \$master_vars{$gname},
+        -font             => 'Arial 9 bold',
+        -foreground       => '#131722',
+        -activeforeground => '#131722',
+        -selectcolor      => '#131722',
+        -command          => sub {
+            my $nuevo_estado = $master_vars{$gname};
+
+            # Propagamos el nuevo estado a todos los checkbuttons del grupo
+            for my $item (@{ $group->{items} }) {
+                my (undef, $key) = @$item;
+                $vars{$key} = $nuevo_estado;
+                if ($chart_engine) {
+                    $chart_engine->{$key} = $vars{$key};
+                }
+            }
+
+            $chart_engine->request_render() if $chart_engine;
+        },
+    );
+
+    $menu->separator;
+
+    for my $item (@{ $group->{items} }) {
+        my ($label, $key, $color) = @$item;
+
+        $menu->checkbutton(
+            -label            => "    $label",
+            -variable         => \$vars{$key},
+            -foreground       => $color,
+            -activeforeground => $color,
+            -selectcolor      => $color,
+            -command          => sub {
+                return unless $chart_engine;
+                $chart_engine->{$key} = $vars{$key};
+
+                # Reflejamos el nuevo estado individual en el checkbutton maestro
+                sync_master($group);
+
+                $chart_engine->request_render();
+            },
+        );
+    }
+
+    $menu->separator unless $gname eq $groups[-1]->{name};
 }
 
 # Espaciador estético intermedio
