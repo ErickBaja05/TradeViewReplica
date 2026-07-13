@@ -168,7 +168,7 @@ sub new {
 
         ),
         vwap_anchored_engine => Market::Indicators::VWAPAnchored->new(
-            std_mult => 1,
+            std_mult => 3,
         ),
         volume_profile_anchored_engine => Market::Indicators::VolumeProfileAnchored->new(
             num_bins => 24,

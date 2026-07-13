@@ -65,7 +65,6 @@ sub draw {
             $x1, $y, $x2, $y,
             -fill  => $color,
             -width => 2,
-            -dash  => [6, 4],
         );
 
         $canvas->createText(
