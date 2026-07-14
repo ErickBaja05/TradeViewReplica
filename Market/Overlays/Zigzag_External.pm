@@ -116,11 +116,15 @@ sub draw {
             $y1 = $y2 + $t * ($y1 - $y2);
         }
 
+        my $is_last_segment = ($i == $#visible_points);
+        my @dash_opt = $is_last_segment ? (-dash => [4, 2]) : ();
+
         $canvas->createLine(
             $x1, $y1,
             $x2, $y2,
             -fill  => '#2962ff',
-            -width => 2
+            -width => 2,
+            @dash_opt
         );
     }
 
