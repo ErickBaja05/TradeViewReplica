@@ -17,9 +17,11 @@ use Market::Indicators::VWAPAnchored;
 use Market::Indicators::VolumeProfileAnchored;
 use Market::Indicators::Fibonacci;
 use Market::Indicators::Levels;
+use Market::Indicators::ZigzagInternal;
 
 use Market::Overlays::Zigzag_External;
 use Market::Overlays::Zigzag_Internal;
+use Market::Overlays::Swing;
 use Market::Overlays::FVG;
 use Market::Overlays::BOS_External;
 use Market::Overlays::BOS_Internal;
@@ -79,6 +81,12 @@ sub new {
         # --- Funcionalidad de Liquidez y SMC (Smart Money Concepts) ---
         show_zigzag_ext   => 0,
         show_zigzag_int   => 0,
+        # Temporalidad "Multi Time Frame" usada por el Zigzag Interno,
+        # independiente de la temporalidad activa del gráfico (igual que el
+        # input "ZigZag Resolution" del indicador PineScript de referencia).
+        zigzag_internal_tf   => '1h',
+        zigzag_internal_cache_key => undef,
+        show_swing   => 0,
         show_bos_ext      => 0,
         show_bos_int      => 0,
         show_choch_ext    => 0,
@@ -173,8 +181,14 @@ sub new {
         volume_profile_anchored_engine => Market::Indicators::VolumeProfileAnchored->new(
             num_bins => 24,
         ),
+        # ZigZag Interno (Internal Structure) — Multi Time Frame, réplica de
+        # zzmtf.txt.
+        zigzag_internal_engine   => Market::Indicators::ZigzagInternal->new(
+            period => 2,
+        ),
         zigzag_ext_overlay       => Market::Overlays::Zigzag_External->new(),
-        zigzag_int_overlay       => Market::Overlays::Zigzag_Internal->new(),
+        zigzag_internal_overlay  => Market::Overlays::Zigzag_Internal->new(),
+        swing_overlay       => Market::Overlays::Swing->new(),
         bos_ext_overlay          => Market::Overlays::BOS_External->new(),
         bos_int_overlay          => Market::Overlays::BOS_Internal->new(),
         choch_ext_overlay        => Market::Overlays::ChoCH_External->new(),
@@ -272,7 +286,7 @@ sub render {
     # --- Capas de Liquidez, SMC, ChoCH, FVG y Order Blocks ---
     # Se dibujan sobre el canvas de precios, apoyándose en la misma escala
     # ($self->{price_panel}->{scale}) que ya fue calculada por PricePanel::render().
-    if ($self->{show_zigzag_ext} || $self->{show_zigzag_int}
+    if ($self->{show_zigzag_ext} || $self->{show_zigzag_int} || $self->{show_swing}
      || $self->{show_bos_ext} || $self->{show_bos_int}
      || $self->{show_choch_ext} || $self->{show_choch_int}
      || $self->{show_eqh} || $self->{show_eql}
@@ -284,6 +298,7 @@ sub render {
      || $self->{show_supertrend} || $self->{show_halftrend} 
      || $self->{show_orderblocks} || $self->{show_channel}) {
         $self->update_smc_overlay($self->{market_data}->last_index());
+        $self->update_zigzag_internal_overlay() if $self->{show_zigzag_int};
 
         my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
 
@@ -309,11 +324,14 @@ sub render {
             $self->{fvg_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
                 if $self->{show_fvg};
             
-            $self->{zigzag_int_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
-                if $self->{show_zigzag_int};
+            $self->{swing_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_swing};
 
             $self->{zigzag_ext_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
                 if $self->{show_zigzag_ext};
+
+            $self->{zigzag_internal_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_zigzag_int};
 
             $self->{bos_ext_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
                 if $self->{show_bos_ext};
@@ -472,7 +490,7 @@ sub update_smc_overlay {
     );
 
     $self->{zigzag_ext_overlay}->set_result($smc_result);
-    $self->{zigzag_int_overlay}->set_result($liq_result);
+    $self->{swing_overlay}->set_result($liq_result);
     $self->{liquidity_overlay}->set_result($liq_result);
 
     $self->{bos_ext_overlay}->set_result($structure_result);
@@ -495,6 +513,82 @@ sub update_smc_overlay {
     $self->{channel_overlay}->set_result($channel_result);
 
     $self->{smc_cache_key} = $cache_key;
+}
+
+=head2 update_zigzag_internal_overlay()
+
+Calcula (con caché) el "Zigzag Interno" (Multi Time Frame, réplica de
+zzmtf.txt). A diferencia del resto de indicadores de estructura, éste NO
+se calcula sobre la temporalidad activa del gráfico, sino sobre la
+temporalidad elegida en C<zigzag_internal_tf> (15m/1h/2h/4h/1d). Los
+pivotes resultantes se "traducen" al espacio de índices de la
+temporalidad activa mediante C<MarketData::index_for_time> para poder
+dibujarse con la misma escala que el resto del gráfico.
+
+=cut
+
+sub update_zigzag_internal_overlay {
+    my ($self) = @_;
+
+    my $market_data = $self->{market_data};
+    return unless $market_data;
+
+    my $mtf = $self->{zigzag_internal_tf} // '1h';
+    my $chart_tf = $market_data->{timeframe} // '1m';
+
+    my $mtf_candles = $market_data->get_timeframe_candles($mtf);
+    my $mtf_count   = scalar @$mtf_candles;
+
+    my $cache_key = join(':', $chart_tf, $mtf, $mtf_count, $market_data->last_index());
+    return if defined $self->{zigzag_internal_cache_key}
+           && $self->{zigzag_internal_cache_key} eq $cache_key;
+
+    my $result = $self->{zigzag_internal_engine}->calculate($mtf_candles);
+
+    # Traducimos cada pivote (calculado en el espacio de índices/tiempo de
+    # $mtf) a una vela REAL y visible de la temporalidad activa del gráfico:
+    # buscamos, dentro del bloque horario de esa vela MTF, cuál vela de la
+    # temporalidad activa tiene el high/low exacto que originó el pivote.
+    # Esto evita que el punto quede "flotando" sin tocar ninguna mecha.
+    my @translated;
+    for my $p (@{ $result->{pivots} }) {
+        my $mtf_idx  = $p->{index};
+        my $time_from = $p->{time};
+        my $time_to   = (defined $mtf_candles->[$mtf_idx + 1])
+                       ? $mtf_candles->[$mtf_idx + 1]->{time}
+                       : undef;
+        my $ptype = ($p->{dir} == 1) ? 'high' : 'low';
+
+        my ($idx, $exact_price) = $market_data->find_pivot_index($time_from, $time_to, $ptype);
+        next unless defined $idx;
+
+        push @translated, {
+            index => $idx,
+            time  => $p->{time},
+            price => $exact_price,
+            dir   => $p->{dir},
+        };
+    }
+
+    $self->{zigzag_internal_overlay}->set_result({ pivots => \@translated });
+    $self->{zigzag_internal_cache_key} = $cache_key;
+}
+
+=head2 set_zigzag_internal_timeframe($tf)
+
+Cambia la temporalidad "Multi Time Frame" usada por el Zigzag Interno
+(15m, 1h, 2h, 4h o 1d) e invalida su caché para forzar el recálculo.
+
+=cut
+
+sub set_zigzag_internal_timeframe {
+    my ($self, $tf) = @_;
+    return unless defined $tf;
+
+    $self->{zigzag_internal_tf} = $tf;
+    $self->{zigzag_internal_cache_key} = undef;
+
+    $self->request_render();
 }
 
 =head2 update_vwap_anchored_overlay($until_index)

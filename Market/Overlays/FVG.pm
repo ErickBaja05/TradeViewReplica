@@ -27,7 +27,7 @@ o, si siguen abiertas, hasta el borde derecho del canvas.
 my %COLORS = (
     BULLISH_FILL    => '#26a69a',   # verde teal (bullishFvgColor)
     BULLISH_OUTLINE => '#089981',
-    BEARISH_FILL    => '#ef5350',   # rojo (bearishFvgColor)
+    BEARISH_FILL    => '#b9224f',   # rojo (bearishFvgColor)
     BEARISH_OUTLINE => '#f23645',
     MITIGATED_FILL  => '#9e9e9e',   # gris (mitigatedFvgColor)
     MITIGATED_OUTLINE => '#757575',

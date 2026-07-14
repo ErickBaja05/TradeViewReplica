@@ -5,15 +5,19 @@ use warnings;
 
 =head1 NOMBRE
 
-Market::Overlays::Swing - Capa visual que marca los puntos de giro (swing
-points) calculados por Market::Indicators::Liquidity (pivotes "minor"),
-dibujando un pequeño círculo sobre cada uno junto con la etiqueta:
+Market::Overlays::Zigzag_Internal - Capa visual que dibuja el "Zigzag
+Interno" (Internal Structure) calculado por
+C<Market::Indicators::ZigzagInternal> a partir de la temporalidad
+"Multi Time Frame" (MTF) elegida por el usuario (15m, 1h, 2h, 4h o 1d),
+tal como el indicador PineScript de referencia C<zzmtf.txt>.
 
-  - "SH" (Swing High) para pivotes de tipo HIGH.
-  - "SL" (Swing Low)  para pivotes de tipo LOW.
-
-Se apoya en el mismo resultado (liq_result) que ya calcula
-Market::Indicators::Liquidity, usando el arreglo minor_pivots.
+Los pivotes llegan ya "traducidos" al espacio de índices de la
+temporalidad activa del gráfico (ver
+C<Market::MarketData::index_for_time> / C<find_pivot_index>), por lo que
+se dibuja igual que C<Market::Overlays::Zigzag_External>. Cada tramo
+alterna de color según la dirección del pivote de llegada: verde
+(C<up_color>) para tramos alcistas (hacia un pivote alto) y rojo
+(C<dn_color>) para tramos bajistas (hacia un pivote bajo).
 
 =cut
 
@@ -21,57 +25,50 @@ sub new {
     my ($class, %args) = @_;
 
     my $self = {
-        liq_result => $args{liq_result},
-        show       => $args{show} // 1,
-        show_high  => $args{show_high} // 1,
-        show_low   => $args{show_low} // 1,
-        color_high => $args{color_high} // '#00ff0d',
-        color_low  => $args{color_low}  // '#ff0000',
-        radius     => $args{radius} // 4,
+        result   => $args{result},
+        show     => $args{show} // 1,
+        up_color => $args{up_color} // '#2bff00',
+        dn_color => $args{dn_color} // '#ff0400',
     };
 
     return bless $self, $class;
 }
 
-=head2 set_result($liq_result)
+=head2 set_result($result)
 
-Actualiza el resultado calculado por el motor de liquidez.
+Actualiza el resultado calculado por C<Market::Indicators::ZigzagInternal>
+(con los índices ya traducidos a la temporalidad activa).
 
 =cut
 
 sub set_result {
-    my ($self, $liq_result) = @_;
-    $self->{liq_result} = $liq_result;
+    my ($self, $result) = @_;
+    $self->{result} = $result;
 }
 
 =head2 draw($canvas, $scale, $start, $end)
 
-Dibuja los swing points visibles entre los índices [$start, $end].
+Dibuja el zigzag interno visible entre los índices [$start, $end].
 
 =cut
 
 sub draw {
     my ($self, $canvas, $scale, $start, $end) = @_;
 
-    return unless $self->{show};
-    return unless $self->{liq_result} && $canvas && $scale;
+    return if !$self->{show};
+    return unless $self->{result} && $self->{result}->{pivots};
+    return unless $canvas && $scale;
 
-    my $pivots = $self->{liq_result}->{minor_pivots} || [];
+    my $pivots = $self->{result}->{pivots};
 
     my $right_limit = ($canvas->Width() || 0) - 2;
     $right_limit = 0 if $right_limit < 0;
 
-    #
-    # Igual que SMC_Structures:
-    # incluir el pivote inmediatamente anterior y el siguiente
-    # para que el zigzag no se corte al hacer scroll.
-    #
     my @pivots_to_draw;
     my $prev_pivot;
     my $next_pivot;
 
     for my $p (@$pivots) {
-
         if ($p->{index} < $start) {
             $prev_pivot = $p;
             next;
@@ -91,110 +88,68 @@ sub draw {
     my @visible_points;
 
     for my $p (@pivots_to_draw) {
-
-        my $is_high = $p->{type} eq 'HIGH';
-
-        next if $is_high  && !$self->{show_high};
-        next if !$is_high && !$self->{show_low};
-
         my $x = $scale->index_to_center_x($p->{index});
         my $y = $scale->value_to_y($p->{price});
 
         next unless defined $x && defined $y;
 
         push @visible_points, {
-            x     => $x,
-            y     => $y,
-            index => $p->{index},
-            price => $p->{price},
-            type  => $p->{type},
+            x            => $x,
+            y            => $y,
+            index        => $p->{index},
+            price        => $p->{price},
+            dir          => $p->{dir},
+            consolidated => $p->{consolidated} // 1,
         };
     }
 
-    #
-    # Zigzag
-    #
-    if (@visible_points >= 2) {
+    return if @visible_points < 2;
 
-        for my $i (1 .. $#visible_points) {
+    # El ÚLTIMO tramo del zigzag (el que llega hasta el pivote más
+    # reciente) es el único que puede no estar consolidado todavía; los
+    # anteriores ya son definitivos. Sólo tiene sentido evaluarlo si el
+    # último pivote visible es efectivamente el último del resultado
+    # completo (si estamos con scroll hacia el pasado, ese punto ya no es
+    # el "último" real y por lo tanto sí está consolidado).
+    my $all_pivots      = $self->{result}->{pivots};
+    my $last_real_pivot = $all_pivots->[-1];
+    my $last_visible     = $visible_points[-1];
+    my $last_is_open     = defined $last_real_pivot
+                         && !$last_real_pivot->{consolidated}
+                         && $last_visible->{index} == $last_real_pivot->{index};
 
-            my $a = $visible_points[$i-1];
-            my $b = $visible_points[$i];
+    for my $i (1 .. $#visible_points) {
+        my $a = $visible_points[$i - 1];
+        my $b = $visible_points[$i];
 
-            my ($x1,$y1)=($a->{x},$a->{y});
-            my ($x2,$y2)=($b->{x},$b->{y});
+        my ($x1, $y1) = ($a->{x}, $a->{y});
+        my ($x2, $y2) = ($b->{x}, $b->{y});
 
-            next if $x1 > $right_limit && $x2 > $right_limit;
+        next if $x1 > $right_limit && $x2 > $right_limit;
 
-            if ($x2 > $right_limit && $x2 != $x1) {
-                my $t = ($right_limit - $x1) / ($x2 - $x1);
-                $x2 = $right_limit;
-                $y2 = $y1 + $t * ($y2 - $y1);
-            }
-
-            if ($x1 > $right_limit && $x1 != $x2) {
-                my $t = ($right_limit - $x2) / ($x1 - $x2);
-                $x1 = $right_limit;
-                $y1 = $y2 + $t * ($y1 - $y2);
-            }
-
-            my $color;
-
-            if ($a->{type} eq 'LOW' && $b->{type} eq 'HIGH') {
-                # Upswing
-                $color = '#00ff0d';   # Green
-            }
-            elsif ($a->{type} eq 'HIGH' && $b->{type} eq 'LOW') {
-                # Downswing
-                $color = '#ff0000';   # Red
-            }
-            else {
-                # Shouldn't happen if pivots alternate correctly
-                $color = '#808080';
-            }
-            
-            $canvas->createLine(
-                $x1, $y1,
-                $x2, $y2,
-                -fill  => $color,
-                -width => 2,
-            );
+        if ($x2 > $right_limit && $x2 != $x1) {
+            my $t = ($right_limit - $x1) / ($x2 - $x1);
+            $x2 = $right_limit;
+            $y2 = $y1 + $t * ($y2 - $y1);
         }
-    }
 
-    
-    #Dibujar pivotes y etiquetas
-    
-    for my $p (@visible_points) {
+        if ($x1 > $right_limit && $x1 != $x2) {
+            my $t = ($right_limit - $x2) / ($x1 - $x2);
+            $x1 = $right_limit;
+            $y1 = $y2 + $t * ($y1 - $y2);
+        }
 
-        next if $p->{x} > $right_limit;
+        # Sólido para todos los tramos, salvo el último si su pivote de
+        # llegada todavía no está consolidado.
+        my $is_last_segment = ($i == $#visible_points);
+        my @dash_opt = ($is_last_segment && $last_is_open) ? (-dash => [4, 2]) : ();
 
-        my $is_high = $p->{type} eq 'HIGH';
-
-        my $color = $is_high
-            ? $self->{color_high}
-            : $self->{color_low};
-
-        my $r = $self->{radius};
-
-        $canvas->createOval(
-            $p->{x} - $r,
-            $p->{y} - $r,
-            $p->{x} + $r,
-            $p->{y} + $r,
-            -outline => $color,
-            -fill    => $color,
-        );
-
-        my $dy = $is_high ? -14 : 14;
-
-        $canvas->createText(
-            $p->{x},
-            $p->{y} + $dy,
-            -text   => $is_high ? 'SH' : 'SL',
-            -fill   => $color,
-            -font   => ['Arial', 7, 'bold'],
-            -anchor => 'center',
+        $canvas->createLine(
+            $x1, $y1,
+            $x2, $y2,
+            -fill  => $b->{dir} == 1 ? $self->{up_color} : $self->{dn_color},
+            -width => 2,
+            @dash_opt,
         );
     }
 }

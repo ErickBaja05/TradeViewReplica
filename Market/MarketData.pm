@@ -349,6 +349,115 @@ sub merge_delta_row {
    return $self;
 }
 
+=head2 get_timeframe_candles($tf)
+
+Devuelve el arreglo de velas ya agregadas para la temporalidad indicada
+($tf), sin importar cuál sea la temporalidad activa del gráfico. Se usa
+para indicadores "Multi Time Frame" (por ejemplo el ZigZag Interno) que
+necesitan calcular sobre una temporalidad distinta a la que se está
+graficando en pantalla.
+
+=cut
+
+sub get_timeframe_candles {
+   my ($self, $tf) = @_;
+   return [] unless defined $tf && exists $self->{data}->{$tf};
+   return $self->{data}->{$tf};
+}
+
+=head2 index_for_time($time_str)
+
+Dado un timestamp (formato "YYYY-MM-DDTHH:MM:SS..."), devuelve el índice,
+dentro del arreglo de la temporalidad ACTIVA, de la última vela cuyo
+tiempo sea menor o igual a $time_str (búsqueda binaria, ya que las velas
+están ordenadas cronológicamente). Se usa para "traducir" un pivote
+calculado en una temporalidad superior (MTF) al sistema de coordenadas
+(índices) de la temporalidad que se está dibujando en el gráfico.
+
+=cut
+
+sub index_for_time {
+   my ($self, $time_str) = @_;
+   return undef unless defined $time_str;
+
+   my $arr = $self->_active_array();
+   return undef unless @$arr;
+
+   my ($lo, $hi) = (0, $#$arr);
+   my $result = 0;
+
+   while ($lo <= $hi) {
+      my $mid = int(($lo + $hi) / 2);
+      if ($arr->[$mid]->{time} le $time_str) {
+         $result = $mid;
+         $lo = $mid + 1;
+      } else {
+         $hi = $mid - 1;
+      }
+   }
+
+   return $result;
+}
+
+=head2 find_pivot_index($time_from, $time_to, $type)
+
+Dado un rango de tiempo [$time_from, $time_to) (bucket de una vela de
+temporalidad superior, MTF), busca DENTRO de la temporalidad ACTIVA la
+vela cuyo C<high> (si C<$type> es 'high') o C<low> (si es 'low') es el
+extremo del rango — es decir, la vela exacta que originó ese máximo o
+mínimo al agregar hacia la temporalidad superior. Devuelve
+C<($index, $value)> o C<(undef, undef)> si el rango está vacío.
+
+Se usa para "traducir" un pivote del ZigZag Interno (calculado en una
+temporalidad MTF) a una vela real y visible de la temporalidad activa,
+en lugar de anclarlo únicamente al inicio del bloque horario (lo cual
+podía dejar el pivote "flotando" sin tocar ninguna mecha).
+
+=cut
+
+sub find_pivot_index {
+   my ($self, $time_from, $time_to, $type) = @_;
+   return (undef, undef) unless defined $time_from && defined $type;
+
+   my $arr = $self->_active_array();
+   return (undef, undef) unless @$arr;
+
+   my $start_idx = $self->index_for_time($time_from);
+   return (undef, undef) unless defined $start_idx;
+
+   # Aseguramos que start_idx no quede antes del inicio real del bucket
+   # (index_for_time devuelve la última vela <= time_from, lo cual es
+   # correcto salvo que esa vela sea, en realidad, anterior al bucket).
+   $start_idx++ while $start_idx < $#$arr && $arr->[$start_idx]->{time} lt $time_from;
+
+   my $end_idx;
+   if (defined $time_to) {
+      $end_idx = $self->index_for_time($time_to);
+      $end_idx = $#$arr unless defined $end_idx;
+      $end_idx-- while $end_idx >= $start_idx && $arr->[$end_idx]->{time} ge $time_to;
+   } else {
+      $end_idx = $#$arr;
+   }
+
+   return (undef, undef) if !defined $end_idx || $end_idx < $start_idx;
+
+   my $best_idx = $start_idx;
+   my $best_val = $arr->[$start_idx]->{$type};
+
+   for my $i ($start_idx .. $end_idx) {
+      my $v = $arr->[$i]->{$type};
+      next unless defined $v;
+
+      if ($type eq 'high') {
+         if ($v > $best_val) { $best_val = $v; $best_idx = $i; }
+      } else {
+         if ($v < $best_val) { $best_val = $v; $best_idx = $i; }
+      }
+   }
+
+   return ($best_idx, $best_val);
+}
+
 =head2 compute_time_anchors()
 
 Analiza el arreglo de velas activas y calcula puntos estratégicos (anclajes) en la línea de tiempo. 

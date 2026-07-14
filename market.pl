@@ -84,6 +84,7 @@ my %vars = (
     show_fibonacci    => 0,
     show_levels       => 0,
 
+    show_swing        => 0,
     show_zigzag_int   => 0,
     show_bos_int      => 0,
     show_choch_int    => 0,
@@ -130,9 +131,10 @@ my @groups = (
     {
         name  => 'Internal Structure',
         items => [
-            ["ZigZag Interno",            "show_zigzag_int",  "#00ff0d"],
+            ["SH y SL",                   "show_swing",  "#00ff0d"],
             ["BOS Interno",               "show_bos_int",     "#26a69a"],
             ["CHoCH Interno",             "show_choch_int",   "#ef5350"],
+            ["Zigzag Interno",            "show_zigzag_int",  "#787b86"],
         ],
     },
     {
@@ -217,6 +219,45 @@ for my $group (@groups) {
 
                 $chart_engine->request_render();
             },
+        );
+    }
+
+    # ── Selector de temporalidad "Multi Time Frame" del Zigzag Interno ──
+    # Réplica del input "ZigZag Resolution" del indicador PineScript de
+    # referencia (zzmtf.txt): permite calcular el zigzag interno sobre una
+    # temporalidad distinta a la que se está graficando en pantalla.
+    if ($gname eq 'Internal Structure') {
+
+        my @zz_int_timeframes = ('15m', '1h', '2h', '4h', '1d');
+        my $zz_int_tf_seleccionada = '1h';
+
+        my $cascade_index;
+        my $zz_int_submenu = $menu->Menu(-tearoff => 0);
+
+        for my $tf_opt (@zz_int_timeframes) {
+            $zz_int_submenu->radiobutton(
+                -label     => "    $tf_opt",
+                -variable  => \$zz_int_tf_seleccionada,
+                -value     => $tf_opt,
+                -command   => sub {
+                    $zz_int_tf_seleccionada = $tf_opt;
+
+                        $menu->entryconfigure(
+                        $cascade_index,
+                            -label => "    Temporalidad de Zigzag Interno ($zz_int_tf_seleccionada)"
+                        );
+
+                    $chart_engine->set_zigzag_internal_timeframe($tf_opt) if $chart_engine;
+                },
+            );
+        }
+
+        $cascade_index = $menu->index('end') + 1;
+
+        $menu->cascade(
+            -label     => "    Temporalidad de Zigzag Interno ($zz_int_tf_seleccionada)",
+            -menu      => $zz_int_submenu,
+            -foreground => '#787b86',
         );
     }
 
