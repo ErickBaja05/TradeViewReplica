@@ -13,6 +13,8 @@ use Market::Indicators::ATR;
 #   FASES DE EJECUCIÓN CENTRAL (MARKET.PL)
 # =========================================================================
 
+# CAMBIAR ARCHIVO DE DATOS AQUI
+my $filepath = '2026_07_13.csv';
 
 my $mw = MainWindow->new();
 $mw->title("Replica Financiera TradingView - EPN");
@@ -267,6 +269,10 @@ for my $group (@groups) {
 # Espaciador estético intermedio
 $control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
 
+my $anchored_indicator_label = $control_panel->Label(-text => "Indicadores Anclados:", -bg => '#fbfcf8', -fg => '#b1b5be', -font => 'Arial 10 bold')
+                             ->pack(-side => 'left', -padx => 10);
+
+
 my $anchor_menu = $control_panel->Menubutton(
     -text             => "Anchored Indicators",
     -bg               => '#ffffff',
@@ -311,6 +317,36 @@ $menu2->checkbutton(
     },
 );
 
+# ── Rango de sigmas del VWAP Anclado (1, 2 o 3) ─────────────────────
+# Submenú (cascade) con opciones de radiobutton que define cuántas bandas de
+# desviación estándar se dibujan alrededor de la línea central del VWAP:
+#   1 sigma => vwap + rango de 1 sigma
+#   2 sigma => vwap + rango de 1 sigma + rango de 2 sigma (colores distintos)
+#   3 sigma => vwap + rango de 1 sigma + rango de 2 sigma + rango de 3 sigma
+my $vwap_sigma_seleccionada = 1;
+
+my $vwap_sigma_submenu = $menu2->Menu(-tearoff => 0);
+
+for my $n (1, 2, 3) {
+    $vwap_sigma_submenu->radiobutton(
+        -label            => "    $n sigma" . ($n == 1 ? '' : 's'),
+        -variable         => \$vwap_sigma_seleccionada,
+        -value            => $n,
+        -foreground       => '#ff8800',
+        -activeforeground => '#ff8800',
+        -selectcolor      => '#ff8800',
+        -command          => sub {
+            $chart_engine->set_vwap_sigma_range($n) if $chart_engine;
+        },
+    );
+}
+
+$menu2->cascade(
+    -label      => "    Rango de Sigma (VWAP Anclado)",
+    -menu       => $vwap_sigma_submenu,
+    -foreground => '#ff8800',
+);
+
 # ── Volume Profile Anclado (Anchored Volume Profile, 1 sigma) ──────
 # Igual que el VWAP Anclado: al marcarlo, el usuario debe hacer click sobre
 # la vela que quiere usar como ancla del histograma de volumen.
@@ -338,6 +374,34 @@ $menu2->checkbutton(
             $chart_engine->request_render();
         }
     },
+);
+
+# ── Rango de sigmas del Volume Profile Anclado (1, 2 o 3) ──────────
+# Igual que el submenú del VWAP Anclado, pero aquí los rangos de sigma se
+# dibujan siempre como líneas VAH/VAL sueltas (nunca como bandas/canales
+# rellenos).
+my $vp_sigma_seleccionada = 1;
+
+my $vp_sigma_submenu = $menu2->Menu(-tearoff => 0);
+
+for my $n (1, 2, 3) {
+    $vp_sigma_submenu->radiobutton(
+        -label            => "    $n sigma" . ($n == 1 ? '' : 's'),
+        -variable         => \$vp_sigma_seleccionada,
+        -value            => $n,
+        -foreground       => '#2962ff',
+        -activeforeground => '#2962ff',
+        -selectcolor      => '#2962ff',
+        -command          => sub {
+            $chart_engine->set_volume_profile_sigma_range($n) if $chart_engine;
+        },
+    );
+}
+
+$menu2->cascade(
+    -label      => "    Rango de Sigma (Volume Profile)",
+    -menu       => $vp_sigma_submenu,
+    -foreground => '#2962ff',
 );
 
 # Espaciador estético intermedio
@@ -494,7 +558,7 @@ $chart_engine->{on_volume_profile_anchor_set} = sub {
 
 
 # 3. Tareas secuenciales requeridas por el documento de requerimientos
-my $archivo_csv = '2026_07_13.csv';
+my $archivo_csv = $filepath;
 open(my $fh, '<', $archivo_csv) or die "No se pudo abrir el archivo '$archivo_csv' $!\n";
 my $encabezado = <$fh>;
 

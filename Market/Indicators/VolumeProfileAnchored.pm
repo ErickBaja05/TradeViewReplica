@@ -22,6 +22,12 @@ indicador nativo de TradingView:
     bandas del VWAP Anclado, pero aplicado a la distribución de volumen por
     precio en lugar de a la serie temporal).
 
+  Al igual que en el VWAP Anclado, además de vah/val (1 sigma, mantenidos
+  por compatibilidad) se calculan siempre los rangos de 2 y 3 sigma
+  (vah2/val2, vah3/val3), de forma que la capa visual (Overlay) pueda
+  mostrar el rango que el usuario haya seleccionado (1, 2 o 3 sigma) sin
+  necesidad de recalcular el indicador.
+
 El cálculo se reinicia ("ancla") en la vela seleccionada por el usuario
 ($anchor_index) y considera todas las velas hasta $until_index.
 
@@ -42,6 +48,10 @@ sub new {
         poc_price    => undef,
         vah          => undef,   # límite superior de la zona de valor (media + 1 sigma)
         val          => undef,   # límite inferior de la zona de valor (media - 1 sigma)
+        vah2         => undef,   # media + 2 sigma
+        val2         => undef,   # media - 2 sigma
+        vah3         => undef,   # media + 3 sigma
+        val3         => undef,   # media - 3 sigma
         max_volume   => 0,
         total_volume => 0,
     };
@@ -55,6 +65,10 @@ sub reset {
     $self->{poc_price}    = undef;
     $self->{vah}          = undef;
     $self->{val}          = undef;
+    $self->{vah2}         = undef;
+    $self->{val2}         = undef;
+    $self->{vah3}         = undef;
+    $self->{val3}         = undef;
     $self->{max_volume}   = 0;
     $self->{total_volume} = 0;
 }
@@ -105,6 +119,10 @@ sub calculate_until {
         poc_price    => undef,
         vah          => undef,
         val          => undef,
+        vah2         => undef,
+        val2         => undef,
+        vah3         => undef,
+        val3         => undef,
         max_volume   => 0,
     } if !defined $anchor_index || !defined $until_index
       || $anchor_index < 0 || $until_index < $anchor_index
@@ -130,6 +148,10 @@ sub calculate_until {
         poc_price    => undef,
         vah          => undef,
         val          => undef,
+        vah2         => undef,
+        val2         => undef,
+        vah3         => undef,
+        val3         => undef,
         max_volume   => 0,
     } unless defined $price_min && defined $price_max && $price_max > $price_min;
 
@@ -211,6 +233,7 @@ sub calculate_until {
     # --- 5. Zona de valor de 1 sigma: media y desviación estándar del
     #        precio, ponderadas por el volumen de cada franja. ---
     my ($vah, $val);
+    my (%vah_n, %val_n);
 
     if ($total_volume > 0) {
         my $sum_pv  = 0;
@@ -229,11 +252,20 @@ sub calculate_until {
 
         $vah = $mean + $sigma;
         $val = $mean - $sigma;
+
+        for my $n (1, 2, 3) {
+            $vah_n{$n} = $mean + $n * $sigma;
+            $val_n{$n} = $mean - $n * $sigma;
+        }
     }
 
     $self->{poc_price}    = $poc_price;
     $self->{vah}          = $vah;
     $self->{val}          = $val;
+    $self->{vah2}         = $vah_n{2};
+    $self->{val2}         = $val_n{2};
+    $self->{vah3}         = $vah_n{3};
+    $self->{val3}         = $val_n{3};
     $self->{max_volume}   = $max_volume;
     $self->{total_volume} = $total_volume;
 
@@ -244,6 +276,10 @@ sub calculate_until {
         poc_price    => $poc_price,
         vah          => $vah,
         val          => $val,
+        vah2         => $vah_n{2},
+        val2         => $val_n{2},
+        vah3         => $vah_n{3},
+        val3         => $val_n{3},
         max_volume   => $max_volume,
     };
 }

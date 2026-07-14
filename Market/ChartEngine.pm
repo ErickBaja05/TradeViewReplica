@@ -113,6 +113,7 @@ sub new {
         vwap_anchor_index          => undef,
         vwap_anchor_selection_mode => 0,   # 1 mientras se espera el click sobre la vela de ancla
         vwap_cache_key             => undef,
+        vwap_sigma_range           => 1,   # cuántas bandas de sigma se dibujan (1, 2 o 3)
 
         # --- Volume Profile Anclado (histograma de volumen por precio con
         #     zona de valor de 1 sigma) ---
@@ -120,6 +121,7 @@ sub new {
         volume_profile_anchor_index          => undef,
         volume_profile_anchor_selection_mode => 0, # 1 mientras se espera el click sobre la vela de ancla
         volume_profile_cache_key             => undef,
+        volume_profile_sigma_range           => 1,   # cuántos rangos de sigma (líneas VAH/VAL) se dibujan (1, 2 o 3)
 
         liquidity_engine  => Market::Indicators::Liquidity->new(
             atr_mult       => 4.0,
@@ -204,8 +206,12 @@ sub new {
         fvg_overlay              => Market::Overlays::FVG->new(),
         orderblocks_overlay      => Market::Overlays::OrderBlocks->new(),
         channel_overlay          => Market::Overlays::Channel->new(),
-        vwap_anchored_overlay    => Market::Overlays::VWAPAnchored->new(),
-        volume_profile_anchored_overlay => Market::Overlays::VolumeProfileAnchored->new(),
+        vwap_anchored_overlay    => Market::Overlays::VWAPAnchored->new(
+            sigma_range => 1,
+        ),
+        volume_profile_anchored_overlay => Market::Overlays::VolumeProfileAnchored->new(
+            sigma_range => 1,
+        ),
     };
 
     bless $self, $class;
@@ -688,6 +694,54 @@ sub set_vwap_anchor {
     $self->cancel_vwap_anchor_selection();
     $self->{on_vwap_anchor_set}->($index)
         if ref($self->{on_vwap_anchor_set}) eq 'CODE';
+    $self->request_render();
+}
+
+=head2 set_vwap_sigma_range($n)
+
+Configura cuántas bandas de desviación estándar se muestran para el VWAP
+Anclado (1, 2 o 3 sigmas). Actualiza la capa visual y redibuja de inmediato
+si el indicador está activo; no requiere recalcular el indicador, ya que
+éste siempre calcula las tres bandas.
+
+=cut
+
+sub set_vwap_sigma_range {
+    my ($self, $n) = @_;
+    return unless defined $n;
+
+    $n = 1 if $n < 1;
+    $n = 3 if $n > 3;
+
+    $self->{vwap_sigma_range} = $n;
+    $self->{vwap_anchored_overlay}->set_sigma_range($n)
+        if $self->{vwap_anchored_overlay};
+
+    $self->request_render();
+}
+
+=head2 set_volume_profile_sigma_range($n)
+
+Configura cuántos rangos de desviación estándar (líneas VAH/VAL) se
+muestran para el Volume Profile Anclado (1, 2 o 3 sigmas). A diferencia del
+VWAP Anclado, estos rangos se dibujan siempre como líneas sueltas, nunca
+como bandas/canales rellenos. Actualiza la capa visual y redibuja de
+inmediato si el indicador está activo; no requiere recalcular el
+indicador, ya que éste siempre calcula los tres rangos.
+
+=cut
+
+sub set_volume_profile_sigma_range {
+    my ($self, $n) = @_;
+    return unless defined $n;
+
+    $n = 1 if $n < 1;
+    $n = 3 if $n > 3;
+
+    $self->{volume_profile_sigma_range} = $n;
+    $self->{volume_profile_anchored_overlay}->set_sigma_range($n)
+        if $self->{volume_profile_anchored_overlay};
+
     $self->request_render();
 }
 

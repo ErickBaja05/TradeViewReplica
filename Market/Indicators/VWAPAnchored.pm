@@ -13,15 +13,23 @@ indicador nativo de TradingView:
   vwap  = cumsum(src * volume) / cumsum(volume)          [desde el ancla]
   var   = cumsum(volume * src^2) / cumsum(volume) - vwap^2
   stdev = sqrt(max(var, 0))
-  upper = vwap + mult * stdev
-  lower = vwap - mult * stdev
+  upper_N = vwap + N * stdev   (N = 1, 2, 3)
+  lower_N = vwap - N * stdev   (N = 1, 2, 3)
 
 El cálculo se reinicia ("ancla") en la vela seleccionada por el usuario
 ($anchor_index) y se acumula hacia adelante hasta $until_index.
 
+Las bandas de 1, 2 y 3 sigma se calculan siempre (el costo extra es mínimo,
+ya que sólo implica multiplicar la misma desviación estándar por 1, 2 y 3),
+de forma que la capa visual (Overlay) pueda mostrar el rango que el usuario
+haya seleccionado (1, 2 o 3 sigma) sin necesidad de recalcular el indicador.
+
 =head1 PARÁMETROS
 
-  std_mult => multiplicador de la desviación estándar para las bandas (def: 1)
+  std_mult => multiplicador base de la desviación estándar (def: 1).
+              Se mantiene por compatibilidad; las claves upper/lower del
+              resultado usan este multiplicador, mientras que upper1/lower1,
+              upper2/lower2 y upper3/lower3 siempre usan 1, 2 y 3 respectivamente.
 
 =cut
 
@@ -30,7 +38,7 @@ sub new {
 
     my $self = {
         std_mult => $args{std_mult} // 1,
-        values   => [],   # serie: [{ index, vwap, upper, lower }, ...]
+        values   => [],   # serie: [{ index, vwap, upper, lower, upper1, lower1, upper2, lower2, upper3, lower3 }, ...]
         anchor_index => undef,
     };
 
@@ -99,15 +107,21 @@ sub calculate_until {
         $cum_vol += $vol;
         $cum_pv2 += $tp * $tp * $vol;
 
-        my ($vwap, $upper, $lower);
+        my ($vwap, $upper, $lower, $stdev);
+        my (%upper_n, %lower_n);
 
         if ($cum_vol > 0) {
             $vwap = $cum_pv / $cum_vol;
             my $variance = ($cum_pv2 / $cum_vol) - ($vwap * $vwap);
             $variance = 0 if $variance < 0;
-            my $stdev = sqrt($variance);
+            $stdev = sqrt($variance);
             $upper = $vwap + $mult * $stdev;
             $lower = $vwap - $mult * $stdev;
+
+            for my $n (1, 2, 3) {
+                $upper_n{$n} = $vwap + $n * $stdev;
+                $lower_n{$n} = $vwap - $n * $stdev;
+            }
         }
         else {
             # Sin volumen acumulado todavía: usamos el precio típico como
@@ -115,13 +129,25 @@ sub calculate_until {
             $vwap  = $tp;
             $upper = $tp;
             $lower = $tp;
+            $stdev = 0;
+
+            for my $n (1, 2, 3) {
+                $upper_n{$n} = $tp;
+                $lower_n{$n} = $tp;
+            }
         }
 
         push @{$self->{values}}, {
-            index => $i,
-            vwap  => $vwap,
-            upper => $upper,
-            lower => $lower,
+            index  => $i,
+            vwap   => $vwap,
+            upper  => $upper,
+            lower  => $lower,
+            upper1 => $upper_n{1},
+            lower1 => $lower_n{1},
+            upper2 => $upper_n{2},
+            lower2 => $lower_n{2},
+            upper3 => $upper_n{3},
+            lower3 => $lower_n{3},
         };
     }
 
