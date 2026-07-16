@@ -105,6 +105,9 @@ my %vars = (
 
     show_vwap_anchored => 0,
     show_volume_profile_anchored => 0,
+
+    show_anchors      => 0,
+    show_multi_vwap   => 0,
 );
 
 # Estructura agrupada: cada grupo tiene un nombre visible, una "master var"
@@ -401,6 +404,66 @@ for my $n (1, 2, 3) {
 $menu2->cascade(
     -label      => "    Rango de Sigma (Volume Profile)",
     -menu       => $vp_sigma_submenu,
+    -foreground => '#2962ff',
+);
+
+# ── Anchors (Pivotes altos/bajos + pivotes perdidos) ────────────────
+# A diferencia del VWAP/Volume Profile Anclados, este es un simple
+# indicador on/off (no requiere seleccionar una vela de ancla con click).
+$menu2->separator;
+
+$menu2->checkbutton(
+    -label            => "    Anchors",
+    -variable         => \$vars{show_anchors},
+    -foreground       => '#ef5350',
+    -activeforeground => '#ef5350',
+    -selectcolor      => '#ef5350',
+    -command          => sub {
+        return unless $chart_engine;
+        $chart_engine->{show_anchors} = $vars{show_anchors};
+        $chart_engine->request_render();
+    },
+);
+
+# ── Multi Anchored VWAP ──────────────────────────────────────────────
+# VWAP Anclado automáticamente en CADA pivote detectado por el indicador
+# "Anchors" (en vez de una sola ancla elegida manualmente con click).
+
+$menu2->checkbutton(
+    -label            => "    Multi Anchored VWAP",
+    -variable         => \$vars{show_multi_vwap},
+    -foreground       => '#2962ff',
+    -activeforeground => '#2962ff',
+    -selectcolor      => '#2962ff',
+    -command          => sub {
+        return unless $chart_engine;
+        $chart_engine->{show_multi_vwap} = $vars{show_multi_vwap};
+        $chart_engine->request_render();
+    },
+);
+
+# ── Rango de sigmas del Multi Anchored VWAP (1, 2 o 3) ──────────────
+my $multi_vwap_sigma_seleccionada = 1;
+
+my $multi_vwap_sigma_submenu = $menu2->Menu(-tearoff => 0);
+
+for my $n (1, 2, 3) {
+    $multi_vwap_sigma_submenu->radiobutton(
+        -label            => "    $n sigma" . ($n == 1 ? '' : 's'),
+        -variable         => \$multi_vwap_sigma_seleccionada,
+        -value            => $n,
+        -foreground       => '#2962ff',
+        -activeforeground => '#2962ff',
+        -selectcolor      => '#2962ff',
+        -command          => sub {
+            $chart_engine->set_multi_vwap_sigma_range($n) if $chart_engine;
+        },
+    );
+}
+
+$menu2->cascade(
+    -label      => "    Rango de Sigma (Multi Anchored VWAP)",
+    -menu       => $multi_vwap_sigma_submenu,
     -foreground => '#2962ff',
 );
 

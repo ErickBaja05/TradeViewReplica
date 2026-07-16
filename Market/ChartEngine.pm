@@ -18,6 +18,8 @@ use Market::Indicators::VolumeProfileAnchored;
 use Market::Indicators::Fibonacci;
 use Market::Indicators::Levels;
 use Market::Indicators::ZigzagInternal;
+use Market::Indicators::Anchors;
+use Market::Indicators::MultiAnchoredVWAP;
 
 use Market::Overlays::Zigzag_External;
 use Market::Overlays::Zigzag_Internal;
@@ -38,6 +40,8 @@ use Market::Overlays::VWAPAnchored;
 use Market::Overlays::VolumeProfileAnchored;
 use Market::Overlays::Fibonacci;
 use Market::Overlays::Levels;
+use Market::Overlays::Anchors;
+use Market::Overlays::MultiAnchoredVWAP;
 
 =head1 NOMBRE
 Market::ChartEngine - Motor gráfico central y orquestador de la interfaz.
@@ -107,6 +111,17 @@ sub new {
         show_orderblocks  => 0,
         show_channel      => 0,
         smc_cache_key     => undef,
+
+        # --- Anchors (sección Volume): pivotes altos/bajos + pivotes
+        #     perdidos ("missed"), réplica parcial de pivots.txt sin las
+        #     líneas de conexión ---
+        show_anchors      => 0,
+
+        # --- Multi Anchored VWAP: un VWAP Anclado (con bandas) por cada
+        #     pivote detectado por el motor de Anchors, en lugar de un único
+        #     ancla elegida manualmente con click ---
+        show_multi_vwap         => 0,
+        multi_vwap_sigma_range  => 1,   # cuántas bandas de sigma se dibujan (1, 2 o 3)
 
         # --- VWAP Anclado (Anchored VWAP + banda de 2 sigma) ---
         show_vwap_anchored         => 0,
@@ -188,6 +203,13 @@ sub new {
         zigzag_internal_engine   => Market::Indicators::ZigzagInternal->new(
             period => 2,
         ),
+        anchors_engine           => Market::Indicators::Anchors->new(
+            length => 50,
+        ),
+        multi_vwap_engine        => Market::Indicators::MultiAnchoredVWAP->new(
+            std_mult    => 1,
+            max_anchors => 20,
+        ),
         zigzag_ext_overlay       => Market::Overlays::Zigzag_External->new(),
         zigzag_internal_overlay  => Market::Overlays::Zigzag_Internal->new(),
         swing_overlay       => Market::Overlays::Swing->new(),
@@ -199,6 +221,10 @@ sub new {
         eql_overlay              => Market::Overlays::EQL->new(),
         fibonacci_overlay        => Market::Overlays::Fibonacci->new(),
         levels_overlay           => Market::Overlays::Levels->new(),
+        anchors_overlay          => Market::Overlays::Anchors->new(),
+        multi_vwap_overlay       => Market::Overlays::MultiAnchoredVWAP->new(
+            sigma_range => 1,
+        ),
         
         liquidity_overlay        => Market::Overlays::Liquidity->new(),
         supertrend_overlay       => Market::Overlays::Supertrend->new(),
@@ -302,7 +328,8 @@ sub render {
      || $self->{show_bsl} || $self->{show_ssl}
      || $self->{show_lq_sweep} || $self->{show_lq_grab} || $self->{show_lq_run}
      || $self->{show_supertrend} || $self->{show_halftrend} 
-     || $self->{show_orderblocks} || $self->{show_channel}) {
+     || $self->{show_orderblocks} || $self->{show_channel}
+     || $self->{show_anchors} || $self->{show_multi_vwap}) {
         $self->update_smc_overlay($self->{market_data}->last_index());
         $self->update_zigzag_internal_overlay() if $self->{show_zigzag_int};
 
@@ -375,6 +402,12 @@ sub render {
 
             $self->{halftrend_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
                 if $self->{show_halftrend};
+
+            $self->{anchors_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_anchors};
+
+            $self->{multi_vwap_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_multi_vwap};
 
         }
     }
@@ -479,6 +512,18 @@ sub update_smc_overlay {
         $until_index
     );
 
+    my $anchors_result = $self->{anchors_engine}->calculate_until(
+        $candles_full,
+        $until_index
+    );
+
+    # Multi Anchored VWAP: un VWAP Anclado por cada pivote de Anchors
+    my $multi_vwap_result = $self->{multi_vwap_engine}->calculate_until(
+        $candles_full,
+        $anchors_result->{markers},
+        $until_index
+    );
+
     # Fibonacci: se calcula sobre la altura del último tramo (leg) del
     # ZigZag Externo, es decir, entre los dos últimos pivotes de
     # $smc_result->{structure} (la misma serie que dibuja zigzag_ext_overlay).
@@ -517,6 +562,8 @@ sub update_smc_overlay {
     $self->{halftrend_overlay}->set_result($halftrend_result);
     $self->{orderblocks_overlay}->set_result($orderblocks_result);
     $self->{channel_overlay}->set_result($channel_result);
+    $self->{anchors_overlay}->set_result($anchors_result);
+    $self->{multi_vwap_overlay}->set_result($multi_vwap_result);
 
     $self->{smc_cache_key} = $cache_key;
 }
@@ -741,6 +788,29 @@ sub set_volume_profile_sigma_range {
     $self->{volume_profile_sigma_range} = $n;
     $self->{volume_profile_anchored_overlay}->set_sigma_range($n)
         if $self->{volume_profile_anchored_overlay};
+
+    $self->request_render();
+}
+
+=head2 set_multi_vwap_sigma_range($n)
+
+Configura cuántas bandas de desviación estándar (1, 2 o 3 sigmas) se
+muestran para TODAS las líneas del Multi Anchored VWAP. Actualiza la capa
+visual y redibuja de inmediato; no requiere recalcular el indicador, ya
+que éste siempre calcula las tres bandas para cada ancla.
+
+=cut
+
+sub set_multi_vwap_sigma_range {
+    my ($self, $n) = @_;
+    return unless defined $n;
+
+    $n = 1 if $n < 1;
+    $n = 3 if $n > 3;
+
+    $self->{multi_vwap_sigma_range} = $n;
+    $self->{multi_vwap_overlay}->set_sigma_range($n)
+        if $self->{multi_vwap_overlay};
 
     $self->request_render();
 }
