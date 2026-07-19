@@ -126,6 +126,13 @@ sub new {
         # --- VWAP Anclado (Anchored VWAP + banda de 2 sigma) ---
         show_vwap_anchored         => 0,
         vwap_anchor_index          => undef,
+        # Modo de anclaje: 'session_start' (inicio de sesión / primera vela),
+        # 'session_open' (apertura: primera vela de la última apertura de
+        # mercado), 'bos_confirmed' (último BOS externo cerrado),
+        # 'choch_confirmed' (último CHoCH externo cerrado) o 'pivot' (elegir
+        # pivote: selección manual por click, lógica clásica). Por defecto
+        # "inicio de sesión".
+        vwap_anchor_mode           => 'session_start',
         vwap_anchor_selection_mode => 0,   # 1 mientras se espera el click sobre la vela de ancla
         vwap_cache_key             => undef,
         vwap_sigma_range           => 1,   # cuántas bandas de sigma se dibujan (1, 2 o 3)
@@ -134,6 +141,9 @@ sub new {
         #     zona de valor de 1 sigma) ---
         show_volume_profile_anchored         => 0,
         volume_profile_anchor_index          => undef,
+        # Mismo esquema de modos de anclaje que el VWAP Anclado (ver
+        # vwap_anchor_mode más arriba). Por defecto "inicio de sesión".
+        volume_profile_anchor_mode           => 'session_start',
         volume_profile_anchor_selection_mode => 0, # 1 mientras se espera el click sobre la vela de ancla
         volume_profile_cache_key             => undef,
         volume_profile_sigma_range           => 1,   # cuántos rangos de sigma (líneas VAH/VAL) se dibujan (1, 2 o 3)
@@ -565,6 +575,12 @@ sub update_smc_overlay {
     $self->{anchors_overlay}->set_result($anchors_result);
     $self->{multi_vwap_overlay}->set_result($multi_vwap_result);
 
+    # Guardamos el resultado de Structure (eventos BOS/CHoCH) para que los
+    # modos de anclaje 'bos_confirmed'/'choch_confirmed' del VWAP Anclado
+    # puedan consultarlo sin depender de que sus capas visuales (BOS/CHoCH
+    # Externo) estén activas.
+    $self->{structure_result} = $structure_result;
+
     $self->{smc_cache_key} = $cache_key;
 }
 
@@ -658,6 +674,20 @@ sub update_vwap_anchored_overlay {
     my ($self, $until_index) = @_;
     return unless defined $until_index && $until_index >= 0;
 
+    my $mode = $self->{vwap_anchor_mode} // 'pivot';
+    if ($mode ne 'pivot') {
+        # Los modos automáticos ('session_start', 'session_open',
+        # 'bos_confirmed', 'choch_confirmed') se recalculan en cada render
+        # para que el ancla siga a la última sesión/BOS/CHoCH confirmado a
+        # medida que llegan velas nuevas.
+        if ($mode eq 'bos_confirmed' || $mode eq 'choch_confirmed') {
+            $self->update_smc_overlay($until_index);
+        }
+
+        my $idx = $self->compute_vwap_anchor_index($mode, $until_index);
+        $self->{vwap_anchor_index} = $idx if defined $idx;
+    }
+
     my $anchor_index = $self->{vwap_anchor_index};
     return unless defined $anchor_index;
 
@@ -735,6 +765,7 @@ sub set_vwap_anchor {
     $index = $last_index if $index > $last_index;
 
     $self->{vwap_anchor_index}  = $index;
+    $self->{vwap_anchor_mode}   = 'pivot';
     $self->{show_vwap_anchored} = 1;
     $self->{vwap_cache_key}     = undef;   # fuerza recálculo inmediato
 
@@ -742,6 +773,115 @@ sub set_vwap_anchor {
     $self->{on_vwap_anchor_set}->($index)
         if ref($self->{on_vwap_anchor_set}) eq 'CODE';
     $self->request_render();
+}
+
+=head2 set_vwap_anchor_mode($mode)
+
+Cambia el modo de anclaje del VWAP Anclado. Modos soportados:
+
+  'session_start'   => primera vela de todo el historial ("inicio de sesión")
+  'session_open'    => primera vela de la última apertura de mercado
+                        detectada (tras el mayor hueco de tiempo reciente)
+  'bos_confirmed'   => vela de confirmación (cierre) del último BOS externo
+  'choch_confirmed' => vela de confirmación (cierre) del último CHoCH externo
+  'pivot'           => selección manual por click ("elegir pivote", lógica
+                        clásica)
+
+Para los modos automáticos (todos salvo 'pivot'), el ancla se calcula de
+inmediato con la última vela disponible (sin esperar un click), se activa
+el indicador y se fuerza su recálculo. Para 'pivot' sólo se guarda el modo;
+es el checkbutton/click del usuario el que efectivamente fija el ancla.
+
+=cut
+
+sub set_vwap_anchor_mode {
+    my ($self, $mode) = @_;
+    return unless defined $mode;
+
+    $self->{vwap_anchor_mode} = $mode;
+    $self->cancel_vwap_anchor_selection();
+
+    if ($mode ne 'pivot') {
+        my $market_data = $self->{market_data};
+        my $last_index  = $market_data ? $market_data->last_index() : undef;
+
+        if (defined $last_index) {
+            $self->update_smc_overlay($last_index)
+                if $mode eq 'bos_confirmed' || $mode eq 'choch_confirmed';
+
+            my $idx = $self->compute_vwap_anchor_index($mode, $last_index);
+            $self->{vwap_anchor_index} = $idx if defined $idx;
+        }
+
+        $self->{show_vwap_anchored} = 1;
+        $self->{vwap_cache_key}     = undef;   # fuerza recálculo inmediato
+    }
+
+    $self->request_render();
+}
+
+=head2 compute_vwap_anchor_index($mode, $until_index)
+
+Calcula el índice de ancla correspondiente a C<$mode> (ver
+C<set_vwap_anchor_mode>), evaluado hasta C<$until_index>. Devuelve C<undef>
+si el modo es 'pivot' (anclaje manual, no se recalcula solo).
+
+=cut
+
+sub compute_vwap_anchor_index {
+    my ($self, $mode, $until_index) = @_;
+    return undef unless defined $until_index;
+
+    if ($mode eq 'session_start') {
+        return 0;
+    }
+    elsif ($mode eq 'session_open') {
+        my $market_data = $self->{market_data};
+        my $idx = $market_data ? $market_data->find_last_session_open_index($until_index) : undef;
+        return defined $idx ? $idx : 0;
+    }
+    elsif ($mode eq 'bos_confirmed') {
+        my $idx = $self->find_last_structure_event_index($until_index, 'BOS');
+        return defined $idx ? $idx : 0;
+    }
+    elsif ($mode eq 'choch_confirmed') {
+        my $idx = $self->find_last_structure_event_index($until_index, 'CHoCH');
+        return defined $idx ? $idx : 0;
+    }
+
+    return undef;
+}
+
+=head2 find_last_structure_event_index($until_index, $prefix)
+
+Busca, entre los eventos de estructura EXTERNA calculados por
+C<update_smc_overlay> ($self->{structure_result}{events}), el de mayor
+índice cuyo tipo empieza con C<$prefix> ('BOS' o 'CHoCH') y cuyo índice no
+supera C<$until_index>. Devuelve el índice de esa vela (la vela de
+confirmación/cierre del BOS o CHoCH) o C<undef> si todavía no se detectó
+ninguno.
+
+=cut
+
+sub find_last_structure_event_index {
+    my ($self, $until_index, $prefix) = @_;
+    return undef unless defined $until_index && defined $prefix;
+
+    my $events = ($self->{structure_result} && $self->{structure_result}->{events})
+        ? $self->{structure_result}->{events}
+        : [];
+
+    my $best;
+    for my $ev (@$events) {
+        next unless defined $ev->{tier} && $ev->{tier} eq 'external';
+        next unless defined $ev->{type} && index($ev->{type}, $prefix) == 0;
+        next unless defined $ev->{index};
+        next if $ev->{index} > $until_index;
+
+        $best = $ev->{index} if !defined $best || $ev->{index} > $best;
+    }
+
+    return $best;
 }
 
 =head2 set_vwap_sigma_range($n)
@@ -830,6 +970,20 @@ sub update_volume_profile_anchored_overlay {
     my ($self, $until_index) = @_;
     return unless defined $until_index && $until_index >= 0;
 
+    my $mode = $self->{volume_profile_anchor_mode} // 'pivot';
+    if ($mode ne 'pivot') {
+        # Los modos automáticos ('session_start', 'session_open',
+        # 'bos_confirmed', 'choch_confirmed') se recalculan en cada render
+        # para que el ancla siga a la última sesión/BOS/CHoCH confirmado a
+        # medida que llegan velas nuevas.
+        if ($mode eq 'bos_confirmed' || $mode eq 'choch_confirmed') {
+            $self->update_smc_overlay($until_index);
+        }
+
+        my $idx = $self->compute_vwap_anchor_index($mode, $until_index);
+        $self->{volume_profile_anchor_index} = $idx if defined $idx;
+    }
+
     my $anchor_index = $self->{volume_profile_anchor_index};
     return unless defined $anchor_index;
 
@@ -908,12 +1062,51 @@ sub set_volume_profile_anchor {
     $index = $last_index if $index > $last_index;
 
     $self->{volume_profile_anchor_index}  = $index;
+    $self->{volume_profile_anchor_mode}   = 'pivot';
     $self->{show_volume_profile_anchored} = 1;
     $self->{volume_profile_cache_key}     = undef;   # fuerza recálculo inmediato
 
     $self->cancel_volume_profile_anchor_selection();
     $self->{on_volume_profile_anchor_set}->($index)
         if ref($self->{on_volume_profile_anchor_set}) eq 'CODE';
+    $self->request_render();
+}
+
+=head2 set_volume_profile_anchor_mode($mode)
+
+Cambia el modo de anclaje del Volume Profile Anclado. Mismos modos que
+C<set_vwap_anchor_mode>: 'session_start', 'session_open', 'bos_confirmed',
+'choch_confirmed' o 'pivot' (selección manual por click).
+
+Para los modos automáticos, el ancla se calcula de inmediato con la última
+vela disponible (sin esperar un click), se activa el indicador y se fuerza
+su recálculo. Para 'pivot' sólo se guarda el modo.
+
+=cut
+
+sub set_volume_profile_anchor_mode {
+    my ($self, $mode) = @_;
+    return unless defined $mode;
+
+    $self->{volume_profile_anchor_mode} = $mode;
+    $self->cancel_volume_profile_anchor_selection();
+
+    if ($mode ne 'pivot') {
+        my $market_data = $self->{market_data};
+        my $last_index  = $market_data ? $market_data->last_index() : undef;
+
+        if (defined $last_index) {
+            $self->update_smc_overlay($last_index)
+                if $mode eq 'bos_confirmed' || $mode eq 'choch_confirmed';
+
+            my $idx = $self->compute_vwap_anchor_index($mode, $last_index);
+            $self->{volume_profile_anchor_index} = $idx if defined $idx;
+        }
+
+        $self->{show_volume_profile_anchored} = 1;
+        $self->{volume_profile_cache_key}     = undef;   # fuerza recálculo inmediato
+    }
+
     $self->request_render();
 }
 

@@ -486,4 +486,75 @@ sub compute_time_anchors {
    return \@raw_anchors;
 }
 
+=head2 find_last_session_open_index($until_index)
+
+Busca, retrocediendo desde C<$until_index>, el hueco de tiempo más grande
+entre dos velas consecutivas (por ejemplo el cierre diario de un futuro, o
+el corte de fin de semana) y devuelve el índice de la primera vela
+INMEDIATAMENTE POSTERIOR a ese hueco: es decir, la vela de "apertura" de la
+última sesión de mercado que contiene a C<$until_index>.
+
+Un hueco se considera significativo cuando es mayor a 3 veces el intervalo
+"normal" entre velas de la temporalidad activa (deducido de las dos
+primeras velas del arreglo). Si no se detecta ningún hueco relevante antes
+de C<$until_index>, se devuelve 0 (la primera vela de todo el historial).
+
+=cut
+
+sub find_last_session_open_index {
+   my ($self, $until_index) = @_;
+
+   my $arr = $self->_active_array();
+   return undef unless $arr && @$arr;
+
+   $until_index = $#$arr if $until_index > $#$arr;
+   return 0 if !defined $until_index || $until_index <= 0;
+
+   my $typical = $self->_seconds_between($arr->[0]{time}, $arr->[1]{time});
+   $typical = 60 unless defined $typical && $typical > 0;
+
+   my $threshold = $typical * 3;
+
+   for (my $i = $until_index; $i > 0; $i--) {
+      my $gap = $self->_seconds_between($arr->[$i - 1]{time}, $arr->[$i]{time});
+      next unless defined $gap;
+
+      return $i if $gap > $threshold;
+   }
+
+   return 0;
+}
+
+=head2 _seconds_between($t1, $t2)
+
+Diferencia en segundos entre dos timestamps del CSV (formato
+"YYYY-MM-DDTHH:MM:SS..."), usando la misma convención de "reloj de pared"
+(ignorando el offset de zona horaria) que C<build_tf_candles>, para que las
+diferencias sean consistentes con el resto del motor.
+
+=cut
+
+sub _seconds_between {
+   my ($self, $t1, $t2) = @_;
+   return undef unless defined $t1 && defined $t2;
+
+   my $e1 = $self->_parse_epoch($t1);
+   my $e2 = $self->_parse_epoch($t2);
+   return undef unless defined $e1 && defined $e2;
+
+   return $e2 - $e1;
+}
+
+sub _parse_epoch {
+   my ($self, $t) = @_;
+   return undef unless defined $t;
+
+   if ($t =~ /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/) {
+      my ($year, $mon, $day, $hh, $mm, $ss) = ($1, $2, $3, $4, $5, $6);
+      return eval { timegm($ss, $mm, $hh, $day, $mon - 1, $year) };
+   }
+
+   return undef;
+}
+
 1;

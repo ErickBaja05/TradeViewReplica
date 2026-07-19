@@ -292,10 +292,16 @@ $anchor_menu->configure(-menu => $menu2);
 # ── VWAP Anclado (Anchored VWAP) ────────────────────────────────────
 # A diferencia del resto de indicadores, este no se activa/desactiva de
 # forma directa: al marcarlo, el usuario debe hacer click sobre la vela
-# que quiere usar como ancla (igual que la herramienta de TradingView).
+# que quiere usar como ancla (igual que la herramienta de TradingView),
+# salvo que el modo de ancla elegido sea uno de los automáticos.
+
+# Modo de ancla actualmente seleccionado en el submenú "Ancla (VWAP
+# Anclado)" (ver más abajo). Declarado aquí arriba porque el checkbutton
+# principal ya lo necesita en su -command. Por defecto "inicio de sesión".
+my $vwap_anchor_mode_seleccionada = 'session_start';
 
 $menu2->checkbutton(
-    -label            => "    VWAP Anclado (click en vela)",
+    -label            => "    VWAP Anclado",
     -variable         => \$vars{show_vwap_anchored},
     -foreground       => '#ff8800',
     -activeforeground => '#ff8800',
@@ -304,11 +310,20 @@ $menu2->checkbutton(
         return unless $chart_engine;
 
         if ($vars{show_vwap_anchored}) {
-            # El usuario acaba de marcarlo: en vez de activarlo de inmediato,
-            # entramos en modo de selección y esperamos su click sobre una vela.
-            $vwap_status_label->configure(-text => "VWAP: haz click en una vela para anclar (Esc/click-derecho cancela)")
-                if $vwap_status_label;
-            $chart_engine->activate_vwap_anchor_selection();
+            if ($vwap_anchor_mode_seleccionada eq 'pivot') {
+                # Modo "Elegir pivote": en vez de activarlo de inmediato,
+                # entramos en modo de selección y esperamos su click sobre
+                # una vela (comportamiento clásico).
+                $vwap_status_label->configure(-text => "VWAP: haz click en una vela para anclar (Esc/click-derecho cancela)")
+                    if $vwap_status_label;
+                $chart_engine->activate_vwap_anchor_selection();
+            }
+            else {
+                # Resto de modos: el ancla se calcula sola (inicio de
+                # sesión, apertura, BOS o CHoCH confirmados), sin necesidad
+                # de click.
+                $chart_engine->set_vwap_anchor_mode($vwap_anchor_mode_seleccionada);
+            }
         }
         else {
             # El usuario lo desmarcó: se oculta el indicador por completo.
@@ -318,6 +333,68 @@ $menu2->checkbutton(
             $chart_engine->request_render();
         }
     },
+);
+
+# ── Ancla del VWAP Anclado (igual que el submenú de sigmas) ────────
+# Define de dónde parte el cálculo del VWAP Anclado:
+#   "Inicio de sesión"  => primera vela de todo el historial (por defecto)
+#   "Apertura"           => primera vela de la última apertura de mercado
+#                            (tras el mayor hueco de tiempo detectado)
+#   "BOS confirmado"     => vela de cierre del último BOS externo
+#   "CHoCH confirmado"   => vela de cierre del último CHoCH externo
+#   "Elegir pivote"       => selección manual por click (lógica actual)
+
+my @vwap_anchor_modes = (
+    { value => 'session_start',   label => 'Inicio de sesion' },
+    { value => 'session_open',    label => 'Apertura' },
+    { value => 'bos_confirmed',   label => 'BOS confirmado' },
+    { value => 'choch_confirmed', label => 'CHoCH confirmado' },
+    { value => 'pivot',           label => 'Elegir pivote' },
+);
+
+my $vwap_anchor_mode_submenu = $menu2->Menu(-tearoff => 0);
+
+for my $opt (@vwap_anchor_modes) {
+    my $value = $opt->{value};
+
+    $vwap_anchor_mode_submenu->radiobutton(
+        -label            => "    $opt->{label}",
+        -variable         => \$vwap_anchor_mode_seleccionada,
+        -value            => $value,
+        -foreground       => '#ff8800',
+        -activeforeground => '#ff8800',
+        -selectcolor      => '#ff8800',
+        -command          => sub {
+            return unless $chart_engine;
+
+            if ($value eq 'pivot') {
+                $chart_engine->{vwap_anchor_mode} = 'pivot';
+
+                if ($vars{show_vwap_anchored}) {
+                    # El indicador ya estaba activo: pedimos el click ahora.
+                    $vwap_status_label->configure(-text => "VWAP: haz click en una vela para anclar (Esc/click-derecho cancela)")
+                        if $vwap_status_label;
+                    $chart_engine->activate_vwap_anchor_selection();
+                }
+            }
+            elsif ($vars{show_vwap_anchored}) {
+                # El indicador ya estaba activo: recalculamos el ancla de
+                # inmediato con el nuevo modo.
+                $chart_engine->set_vwap_anchor_mode($value);
+            }
+            else {
+                # El indicador todavía no está activo: sólo guardamos la
+                # preferencia, se aplicará al marcar el checkbutton.
+                $chart_engine->{vwap_anchor_mode} = $value;
+            }
+        },
+    );
+}
+
+$menu2->cascade(
+    -label      => "    Ancla (VWAP Anclado)",
+    -menu       => $vwap_anchor_mode_submenu,
+    -foreground => '#ff8800',
 );
 
 # ── Rango de sigmas del VWAP Anclado (1, 2 o 3) ─────────────────────
@@ -352,9 +429,15 @@ $menu2->cascade(
 
 # ── Volume Profile Anclado (Anchored Volume Profile, 1 sigma) ──────
 # Igual que el VWAP Anclado: al marcarlo, el usuario debe hacer click sobre
-# la vela que quiere usar como ancla del histograma de volumen.
+# la vela que quiere usar como ancla del histograma de volumen, salvo que
+# el modo de ancla elegido sea uno de los automáticos.
+
+# Modo de ancla actualmente seleccionado en el submenú "Ancla (Volume
+# Profile Anclado)" (ver más abajo). Por defecto "inicio de sesión".
+my $vp_anchor_mode_seleccionada = 'session_start';
+
 $menu2->checkbutton(
-    -label            => "    Volume Profile Anclado (click en vela)",
+    -label            => "    Volume Profile Anclado",
     -variable         => \$vars{show_volume_profile_anchored},
     -foreground       => '#2962ff',
     -activeforeground => '#2962ff',
@@ -363,11 +446,19 @@ $menu2->checkbutton(
         return unless $chart_engine;
 
         if ($vars{show_volume_profile_anchored}) {
-            # El usuario acaba de marcarlo: entramos en modo de selección y
-            # esperamos su click sobre una vela.
-            $vwap_status_label->configure(-text => "Volume Profile: haz click en una vela para anclar (Esc/click-derecho cancela)")
-                if $vwap_status_label;
-            $chart_engine->activate_volume_profile_anchor_selection();
+            if ($vp_anchor_mode_seleccionada eq 'pivot') {
+                # Modo "Elegir pivote": entramos en modo de selección y
+                # esperamos su click sobre una vela (comportamiento clásico).
+                $vwap_status_label->configure(-text => "Volume Profile: haz click en una vela para anclar (Esc/click-derecho cancela)")
+                    if $vwap_status_label;
+                $chart_engine->activate_volume_profile_anchor_selection();
+            }
+            else {
+                # Resto de modos: el ancla se calcula sola (inicio de
+                # sesión, apertura, BOS o CHoCH confirmados), sin necesidad
+                # de click.
+                $chart_engine->set_volume_profile_anchor_mode($vp_anchor_mode_seleccionada);
+            }
         }
         else {
             # El usuario lo desmarcó: se oculta el indicador por completo.
@@ -377,6 +468,60 @@ $menu2->checkbutton(
             $chart_engine->request_render();
         }
     },
+);
+
+# ── Ancla del Volume Profile Anclado (igual que la del VWAP Anclado) ──
+my @vp_anchor_modes = (
+    { value => 'session_start',   label => 'Inicio de sesion' },
+    { value => 'session_open',    label => 'Apertura' },
+    { value => 'bos_confirmed',   label => 'BOS confirmado' },
+    { value => 'choch_confirmed', label => 'CHoCH confirmado' },
+    { value => 'pivot',           label => 'Elegir pivote' },
+);
+
+my $vp_anchor_mode_submenu = $menu2->Menu(-tearoff => 0);
+
+for my $opt (@vp_anchor_modes) {
+    my $value = $opt->{value};
+
+    $vp_anchor_mode_submenu->radiobutton(
+        -label            => "    $opt->{label}",
+        -variable         => \$vp_anchor_mode_seleccionada,
+        -value            => $value,
+        -foreground       => '#2962ff',
+        -activeforeground => '#2962ff',
+        -selectcolor      => '#2962ff',
+        -command          => sub {
+            return unless $chart_engine;
+
+            if ($value eq 'pivot') {
+                $chart_engine->{volume_profile_anchor_mode} = 'pivot';
+
+                if ($vars{show_volume_profile_anchored}) {
+                    # El indicador ya estaba activo: pedimos el click ahora.
+                    $vwap_status_label->configure(-text => "Volume Profile: haz click en una vela para anclar (Esc/click-derecho cancela)")
+                        if $vwap_status_label;
+                    $chart_engine->activate_volume_profile_anchor_selection();
+                }
+            }
+            elsif ($vars{show_volume_profile_anchored}) {
+                # El indicador ya estaba activo: recalculamos el ancla de
+                # inmediato con el nuevo modo.
+                $chart_engine->set_volume_profile_anchor_mode($value);
+            }
+            else {
+                # El indicador todavía no está activo: sólo guardamos la
+                # preferencia, se aplicará al marcar el checkbutton.
+                $chart_engine->{volume_profile_anchor_mode} = $value;
+            }
+        },
+    );
+}
+
+$menu2->cascade(
+    -label      => "    Ancla (Volume Profile Anclado)",
+    -menu       => $vp_anchor_mode_submenu,
+    -foreground => '#2962ff',
 );
 
 # ── Rango de sigmas del Volume Profile Anclado (1, 2 o 3) ──────────
