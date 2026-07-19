@@ -204,8 +204,19 @@ sub draw_crosshair {
 sub render_last_visible_value {
     my ($self, $data_slice, $scale, $atr_values) = @_;
 
-    my ($start_index, $end_index) = $self->{engine}->compute_window();
-    my $last_atr_val = $atr_values->[$end_index];
+    # Igual que PricePanel::render_last_visible_price(), que ancla la
+    # etiqueta a la última vela REALMENTE VISIBLE (data_slice->[-1]).
+    # get_slice() ya recorta $end_index contra el final real de los
+    # datos, así que el índice absoluto de esa última vela visible es
+    # $start_index + (nº de velas en data_slice) - 1. Usar directamente
+    # $end_index (sin recortar) fallaba al desplazarse a la derecha
+    # (undef, la etiqueta desaparecía); usar el último valor definido
+    # de todo el array fallaba al desplazarse a la izquierda (siempre
+    # mostraba el mismo valor, sin actualizarse). Con el índice de la
+    # última vela visible se resuelven ambos casos.
+    my ($start_index) = $self->{engine}->compute_window();
+    my $real_end_index = $start_index + scalar(@$data_slice) - 1;
+    my $last_atr_val = $atr_values->[$real_end_index];
     return unless defined $last_atr_val;
 
     my $y = $scale->value_to_y($last_atr_val);

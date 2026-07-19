@@ -1290,17 +1290,44 @@ sub find_pivot_labels {
 
     # Incluimos un pivote sintético al inicio de la ventana para que
     # fill_between_pivots() pueda rellenar desde el borde izquierdo.
+    #
+    # BUG CORREGIDO: si la ventana visible empieza JUSTO en la primera
+    # vela de un día nuevo (ej. el usuario se desplaza hasta dejar como
+    # primera vela visible el open del día 12), este pivote inicial
+    # tomaba ese día como "$ultimo_dia" desde el arranque, así que el
+    # bucle de abajo nunca detectaba el cambio de día (no hay una vela
+    # anterior *visible* con la que comparar) y la etiqueta de ese día
+    # jamás se generaba — el pivote se marcaba 'start' (no dibujable) en
+    # vez de 'day'. Esto explica por qué el número de día "a veces"
+    # desaparecía: dependía de que el cambio de día cayera exactamente
+    # en el borde izquierdo de la ventana visible.
+    #
+    # Para corregirlo, miramos la vela justo ANTERIOR a la ventana
+    # (fuera de lo visible, pero existente en los datos) para saber si
+    # el día ya había cambiado antes de $start. Si es así, el pivote
+    # inicial se marca como 'day' (dibujable) en vez de 'start'.
     {
         my $primera = $velas->[$start];
         if ($primera) {
+            ($ultimo_dia) = ($primera->{time} // "") =~ /^(\d{4}-\d{2}-\d{2})/;
+            $ultimo_dia //= "";
+
+            my $es_cambio_de_dia_en_el_borde = 0;
+            if ($start > 0) {
+                my $anterior = $velas->[$start - 1];
+                if ($anterior) {
+                    my ($dia_anterior) = ($anterior->{time} // "") =~ /^(\d{4}-\d{2}-\d{2})/;
+                    $es_cambio_de_dia_en_el_borde = 1
+                        if defined $dia_anterior && $dia_anterior ne "" && $dia_anterior ne $ultimo_dia;
+                }
+            }
+
             push @pivots, {
                 indice_absoluto => $start,
                 indice_relativo => 0,
                 timestamp       => $primera->{time} // "",
-                type            => 'start',   # marcador interno, no se dibuja
+                type            => $es_cambio_de_dia_en_el_borde ? 'day' : 'start',
             };
-            ($ultimo_dia) = ($primera->{time} // "") =~ /^(\d{4}-\d{2}-\d{2})/;
-            $ultimo_dia //= "";
         }
     }
 
@@ -1346,7 +1373,9 @@ sub find_pivot_labels {
 #
 # Para cada par de pivotes consecutivos:
 #   1. Mide el espacio en píxeles disponible entre ellos.
-#   2. Elige el intervalo de minutos más "bonito" que quepa sin saturar.
+#   2. Elige el intervalo "bonito" más fino que quepa sin saturar, de entre
+#      un set reducido y limpio: 1 día, 3 h, 1 h 30, 1 h, 30 min, 15 min,
+#      5 min, 1 min (igual que TradingView).
 #   3. Genera etiquetas horarias (type => 'hour') en los timestamps exactos.
 # Devuelve la lista completa (pivotes dibujables + relleno), ordenada por x.
 # -----------------------------------------------------------------------------
@@ -1370,11 +1399,28 @@ sub fill_between_pivots {
         $pivots->[-1]{type} = 'hour';
     }
 
-    # Pasos "bonitos" en minutos
-    my @steps = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20, 30, 60, 120, 240, 480);
+    # Pasos "bonitos" en minutos, de más fino a más grueso. Este conjunto
+    # reducido evita pasos "raros" (7, 9, 20 min...) y usa únicamente
+    # intervalos que un trader reconoce al vuelo, igual que TradingView:
+    # 1 min, 5 min, 15 min, 30 min, 1 h, 1 h 30, 3 h, 1 día.
+    my @steps = (1, 5, 15, 30, 60, 90, 180, 1440);
 
-    # Espacio mínimo entre etiquetas en píxeles (evita solapamiento visual)
-    my $min_spacing = 1;
+    # Espacio mínimo entre etiquetas en píxeles. Debe reflejar el ancho
+    # REAL que ocupa una etiqueta de tiempo renderizada (mismo criterio
+    # que usa remove_overlaps(): "HH:MM" son 5 caracteres × 8px + 12px de
+    # margen = 52px; redondeamos a 60px de margen de seguridad).
+    #
+    # Con un valor de 1px (el anterior) esta comprobación no filtraba
+    # casi nada, así que casi siempre se elegía el paso más fino posible
+    # (1 minuto) y se generaba una etiqueta por cada vela del intervalo.
+    # remove_overlaps() terminaba recortando ese exceso según el espacio
+    # en pantalla, pero al filtrar por posición X en vez de por minutos
+    # "bonitos" el resultado eran horas arbitrarias (02:24, 04:48, ...)
+    # en vez de marcas limpias (03:00, 06:00, ...). Al usar aquí el
+    # ancho real, el paso "bonito" correcto (1h, 3h, 1 día, etc.) se
+    # elige desde el principio y remove_overlaps() sólo actúa como red
+    # de seguridad ante casos límite, no como filtro principal.
+    my $min_spacing = 45;
 
     my @result;
 
@@ -1395,11 +1441,28 @@ sub fill_between_pivots {
         my $max_labels = int($pixel_distance / $min_spacing);
         next if $max_labels < 1;
 
-        # Elegir el menor paso que produzca <= max_labels etiquetas
-        # Para estimarlo necesitamos cuántos minutos hay entre los pivotes.
-        my $ts1 = $p1->{timestamp};
-        my $ts2 = $p2->{timestamp};
-        my $minutos_span = $self->_ts_diff_minutes($ts1, $ts2);
+        # Elegir el menor paso que produzca <= max_labels etiquetas.
+        # Para estimarlo necesitamos cuántos minutos "reales" hay entre los
+        # pivotes.
+        #
+        # BUG CORREGIDO: antes se usaba _ts_diff_minutes() para calcular la
+        # diferencia de CALENDARIO entre los dos timestamps. Eso se rompe en
+        # cuanto hay un hueco real en los datos (fin de semana, sesión de
+        # mercado cerrada, feriado): p.ej. el viernes cierra a las 15:59 y
+        # el domingo reabre a las 17:00 — calendario dice "~1650 minutos de
+        # diferencia", pero en realidad solo hay ~159 velas reales en ese
+        # tramo. Con ese span inflado se elegía un paso demasiado grueso
+        # (90 min) y sólo sobrevivía UNA etiqueta suelta en vez de la serie
+        # completa cada 15 min.
+        #
+        # La cantidad de velas REALES entre los pivotes (indice_absoluto)
+        # es siempre la medida correcta del espacio de tiempo "denso" que
+        # hay que repartir en píxeles, sin importar los huecos de calendario
+        # que haya por fuera. La multiplicamos por la duración de cada vela
+        # según la temporalidad activa para obtener minutos.
+        my $bar_minutes  = $self->_bar_minutes();
+        my $index_span   = $p2->{indice_absoluto} - $p1->{indice_absoluto};
+        my $minutos_span = $index_span * $bar_minutes;
         next if $minutos_span <= 0;
 
         my $chosen_step = undef;
@@ -1436,9 +1499,23 @@ sub fill_between_pivots {
         }
     }
 
-    # Añadir el último pivote si es dibujable
+    # Añadir el último pivote. El pivote final es siempre sintético
+    # (type => 'end', "marcador interno") porque se genera para poder
+    # calcular el relleno del último intervalo, pero su timestamp SÍ
+    # corresponde a una vela real (la última visible) y por tanto debe
+    # dibujarse igualmente; de lo contrario la etiqueta de tiempo del
+    # borde derecho del gráfico nunca aparece en pantalla. Lo
+    # convertimos a tipo 'hour' para que se renderice como el resto de
+    # etiquetas horarias.
     my $last = $pivots->[-1];
-    push @result, $last if $last && $last->{type} ne 'end';
+    if ($last) {
+        if ($last->{type} eq 'end') {
+            push @result, { %$last, type => 'hour' };
+        }
+        else {
+            push @result, $last;
+        }
+    }
 
     # Ordenar por posición
     @result = sort { $a->{indice_absoluto} <=> $b->{indice_absoluto} } @result;
@@ -1447,10 +1524,37 @@ sub fill_between_pivots {
 }
 
 # -----------------------------------------------------------------------------
+# label_display_text($lbl)
+#
+# Devuelve el texto CORTO que realmente se dibuja para una etiqueta del eje
+# de tiempo: el número de día para los pivotes 'day' (ej. "9"), o "HH:MM"
+# para el resto. Debe ser la ÚNICA fuente de verdad para ese texto, usada
+# tanto para medir anchos reales (remove_overlaps) como para dibujar
+# (PricePanel::draw_time_axis) — así ambos sitios están siempre de acuerdo.
+# -----------------------------------------------------------------------------
+sub label_display_text {
+    my ($self, $lbl) = @_;
+    my $texto = $lbl->{timestamp} // "";
+
+    if ($lbl->{type} && $lbl->{type} eq 'day' && $texto =~ /^\d{4}-\d{2}-(\d{2})/) {
+        return "" . int($1);
+    }
+
+    my ($hora) = $texto =~ /T?(\d{2}:\d{2})/;
+    return defined $hora ? $hora : $texto;
+}
+
+# -----------------------------------------------------------------------------
 # remove_overlaps(\@labels)
 #
 # Descarta etiquetas cuya posición X esté demasiado cerca de la anterior.
-# La anchura de cada texto se estima como: caracteres × 8 px + margen 12 px.
+# La anchura de cada texto se estima sobre el texto REALMENTE dibujado
+# (label_display_text): caracteres × 8 px + margen 12 px. Antes se medía
+# la longitud del timestamp completo ("2026-07-09 00:00:00", 19
+# caracteres) en vez del "9" que se ve en pantalla, lo que sobreestimaba
+# muchísimo el ancho de los pivotes de día y descartaba etiquetas de más
+# — sobre todo notorio al hacer zoom out, donde predominan los pivotes
+# de día muy próximos entre sí en píxeles.
 # Los pivotes 'day' tienen prioridad: si colisionan con una 'hour' anterior,
 # es la 'hour' la que se elimina (ya se hizo).  Si colisionan entre sí,
 # se mantiene la primera que apareció.
@@ -1468,12 +1572,13 @@ sub remove_overlaps {
     for my $lbl (@$labels) {
         my $x = $scale->index_to_center_x($lbl->{indice_absoluto});
 
-        # Estimar anchura del texto
-        my $text  = $lbl->{timestamp} // "";
+        # Estimar anchura del texto REALMENTE dibujado
+        my $text  = $self->label_display_text($lbl);
         my $chars = length($text) > 0 ? length($text) : 5;
         my $ancho = $chars * 8 + 12;     # 8 px/carácter + 12 px de margen
         my $x_left  = $x - int($ancho / 2);
         my $x_right = $x + int($ancho / 2);
+
 
         if ($x_left > $last_x_right) {
             push @kept, $lbl;
@@ -1489,6 +1594,19 @@ sub remove_overlaps {
     }
 
     return \@kept;
+}
+
+# -----------------------------------------------------------------------------
+# _bar_minutes()
+#
+# Duración en minutos de cada vela según la temporalidad activa del
+# gráfico (usa el mismo mapa %BLOCK_MINUTES que Market::MarketData).
+# Por defecto asume 1 minuto (temporalidad '1m') si no se puede determinar.
+# -----------------------------------------------------------------------------
+sub _bar_minutes {
+    my ($self) = @_;
+    my $tf = $self->{market_data} ? ($self->{market_data}->{timeframe} // '1m') : '1m';
+    return $Market::MarketData::BLOCK_MINUTES{$tf} || 1;
 }
 
 # -----------------------------------------------------------------------------

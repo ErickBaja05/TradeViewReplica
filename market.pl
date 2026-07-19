@@ -537,6 +537,17 @@ $vwap_status_label = $control_panel->Label(
 
 # --- ESTRUCTURA MODULAR DE CONTENEDORES PARA EVITAR DEFORMACIÓN ---
 
+# --- PROPORCIÓN VERTICAL 2/3 VELAS - 1/3 ATR ---
+# Forzamos a Tk a calcular la geometría real de la barra de control ya
+# empaquetada para saber cuánta altura queda disponible debajo de ella.
+$mw->update;
+my $control_panel_height = $control_panel->reqheight;
+my $available_height     = $height - $control_panel_height;
+my $atr_frame_height     = int($available_height / 3);
+# El panel de precios (price_frame, más abajo) usa -expand => 1, así que
+# automáticamente ocupa el resto: available_height - atr_frame_height,
+# es decir, los 2/3 restantes.
+
 # A. PANEL PRINCIPAL DE PRECIOS Y VELAS
 my $price_frame = $mw->Frame(-bg => '#fbfcf8')->pack(-side => 'top', -fill => 'both', -expand => 1);
 
@@ -564,7 +575,8 @@ my $time_canvas = $time_axis_row->Canvas(-bg => '#fbfcf8', -height => 25, -highl
 
 
 # B. PANEL INFERIOR DEL INDICADOR ATR
-my $atr_frame = $mw->Frame(-bg => '#fbfcf8', -height => 160)->pack(-side => 'top', -fill => 'both', -expand => 0);
+my $atr_frame = $mw->Frame(-bg => '#fbfcf8', -height => $atr_frame_height)->pack(-side => 'top', -fill => 'both', -expand => 0);
+$atr_frame->packPropagate(0); # conserva la altura calculada (1/3) aunque los hijos pidan más/menos espacio
 
 my $atr_main_row = $atr_frame->Frame(-bg => '#fbfcf8')->pack(-side => 'top', -fill => 'both', -expand => 1);
 
