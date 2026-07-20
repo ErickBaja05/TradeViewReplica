@@ -52,7 +52,17 @@ sub new {
          '1w'  => [],
       },
       # servirá para almacenar las velas
-      candles => []
+      candles => [],
+
+      # --- Modo Replay ---
+      # Cuando replay_active está activo, todas las lecturas (size,
+      # last_index, get_candle, get_slice, index_for_time, etc.) quedan
+      # restringidas a las velas cuyo tiempo sea <= replay_time, sin
+      # importar la temporalidad activa. Esto permite "viajar en el
+      # tiempo" simplemente moviendo un límite, sin borrar ni duplicar
+      # datos reales.
+      replay_active => 0,
+      replay_time   => undef,
    };
    bless $self, $class;
    return $self;
@@ -117,7 +127,41 @@ sub _active_array {
    if (scalar @{$self->{data}->{$tf}} == 0 && scalar @{$self->{candles}} > 0) {
       warn "[MarketData Warning]: La temporalidad '$tf' no ha sido procesada o agrupada.\n";
    }
-   return $self->{data}->{$tf};
+
+   return $self->_apply_replay_boundary($self->{data}->{$tf});
+}
+
+=head2 _apply_replay_boundary($full_array)
+
+Dado el arreglo COMPLETO de velas de una temporalidad, devuelve una copia
+recortada hasta (e incluyendo) la vela cuyo tiempo coincide con el límite
+actual del Modo Replay (C<replay_time>), mediante búsqueda binaria (las
+velas están ordenadas cronológicamente). Si el Modo Replay no está activo,
+devuelve el arreglo original sin modificar.
+
+=cut
+
+sub _apply_replay_boundary {
+   my ($self, $full) = @_;
+
+   return $full unless $self->{replay_active} && defined $self->{replay_time};
+   return [] unless $full && @$full;
+
+   my ($lo, $hi) = (0, $#$full);
+   my $result = -1;
+
+   while ($lo <= $hi) {
+      my $mid = int(($lo + $hi) / 2);
+      if ($full->[$mid]->{time} le $self->{replay_time}) {
+         $result = $mid;
+         $lo = $mid + 1;
+      } else {
+         $hi = $mid - 1;
+      }
+   }
+
+   return [] if $result < 0;
+   return [ @{$full}[0 .. $result] ];
 }
 
 =head2 get_candle()
@@ -380,7 +424,7 @@ graficando en pantalla.
 sub get_timeframe_candles {
    my ($self, $tf) = @_;
    return [] unless defined $tf && exists $self->{data}->{$tf};
-   return $self->{data}->{$tf};
+   return $self->_apply_replay_boundary($self->{data}->{$tf});
 }
 
 =head2 index_for_time($time_str)
@@ -573,6 +617,144 @@ sub _parse_epoch {
    }
 
    return undef;
+}
+
+=head2 is_replay_active()
+
+Indica si el Modo Replay está actualmente activo.
+
+=cut
+
+sub is_replay_active {
+   my ($self) = @_;
+   return $self->{replay_active} ? 1 : 0;
+}
+
+=head2 replay_start($index)
+
+Activa el Modo Replay, fijando el límite de velas visibles en la vela de
+posición C<$index> (índice global, inclusive) de la temporalidad ACTIVA en
+ese momento (ignorando cualquier límite de Replay previo, para poder
+re-anclar el punto de partida). Devuelve 1 si el Replay quedó activado, o
+0 si el índice/temporalidad no tienen datos.
+
+=cut
+
+sub replay_start {
+   my ($self, $index) = @_;
+   return 0 unless defined $index;
+
+   my $tf   = $self->{timeframe} // '1m';
+   my $full = $self->{data}->{$tf} || [];
+   return 0 unless @$full;
+
+   $index = 0      if $index < 0;
+   $index = $#$full if $index > $#$full;
+
+   $self->{replay_active} = 1;
+   $self->{replay_time}   = $full->[$index]->{time};
+
+   return 1;
+}
+
+=head2 replay_stop()
+
+Desactiva el Modo Replay y restaura la visibilidad de todo el historial
+cargado, en todas las temporalidades.
+
+=cut
+
+sub replay_stop {
+   my ($self) = @_;
+   $self->{replay_active} = 0;
+   $self->{replay_time}   = undef;
+   return $self;
+}
+
+=head2 replay_forward($steps)
+
+Avanza C<$steps> velas (por defecto 1) el límite del Modo Replay
+(revela las siguientes velas de la temporalidad activa). Si el avance
+solicitado supera la última vela disponible, se detiene ahí (sin fallar).
+Devuelve la cantidad de velas efectivamente avanzadas (0 si el Replay no
+está activo o ya se había alcanzado el final).
+
+=cut
+
+sub replay_forward {
+   my ($self, $steps) = @_;
+   $steps = 1 unless defined $steps && $steps > 0;
+   return 0 unless $self->{replay_active};
+
+   my $tf   = $self->{timeframe} // '1m';
+   my $full = $self->{data}->{$tf} || [];
+   return 0 unless @$full;
+
+   my $current_idx = $self->_replay_index($full);
+   return 0 unless defined $current_idx;
+   return 0 if $current_idx >= $#$full;
+
+   my $target_idx = $current_idx + $steps;
+   $target_idx = $#$full if $target_idx > $#$full;
+
+   $self->{replay_time} = $full->[$target_idx]->{time};
+   return $target_idx - $current_idx;
+}
+
+=head2 replay_backward($steps)
+
+Retrocede C<$steps> velas (por defecto 1) el límite del Modo Replay
+(retira las últimas velas visibles). Nunca deja menos de una vela
+visible. Devuelve la cantidad de velas efectivamente retrocedidas (0 si
+el Replay no está activo o ya se había alcanzado la primera vela).
+
+=cut
+
+sub replay_backward {
+   my ($self, $steps) = @_;
+   $steps = 1 unless defined $steps && $steps > 0;
+   return 0 unless $self->{replay_active};
+
+   my $tf   = $self->{timeframe} // '1m';
+   my $full = $self->{data}->{$tf} || [];
+   return 0 unless @$full;
+
+   my $current_idx = $self->_replay_index($full);
+   return 0 unless defined $current_idx;
+   return 0 if $current_idx <= 0;
+
+   my $target_idx = $current_idx - $steps;
+   $target_idx = 0 if $target_idx < 0;
+
+   $self->{replay_time} = $full->[$target_idx]->{time};
+   return $current_idx - $target_idx;
+}
+
+=head2 _replay_index($full_array)
+
+Devuelve el índice, dentro del arreglo COMPLETO recibido, correspondiente
+al límite actual del Modo Replay (C<replay_time>).
+
+=cut
+
+sub _replay_index {
+   my ($self, $full) = @_;
+   return undef unless defined $self->{replay_time} && $full && @$full;
+
+   my ($lo, $hi) = (0, $#$full);
+   my $result;
+
+   while ($lo <= $hi) {
+      my $mid = int(($lo + $hi) / 2);
+      if ($full->[$mid]->{time} le $self->{replay_time}) {
+         $result = $mid;
+         $lo = $mid + 1;
+      } else {
+         $hi = $mid - 1;
+      }
+   }
+
+   return $result;
 }
 
 1;

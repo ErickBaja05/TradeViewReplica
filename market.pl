@@ -617,63 +617,163 @@ $menu2->cascade(
 # Espaciador estético intermedio
 $control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
 
-# Checkbutton para mostrar/ocultar la línea + etiqueta del último precio visible
+# --- MENÚ DESPLEGABLE "CONFIGURACIÓN" ---
+# Agrupa ajustes generales de la vista que antes eran controles sueltos en
+# la barra: mostrar/ocultar el último precio, alternar la escala
+# Auto/Manual y restablecer la vista a sus valores por defecto.
 my $show_last_price_var = 1;
-$control_panel->Checkbutton(
-    -text             => "Ultimo Precio",
-    -variable         => \$show_last_price_var,
-    -bg               => '#fbfcf8',
-    -fg               => '#000000',
-    -activebackground => '#fbfcf8',
-    -activeforeground => '#000000',
-    -selectcolor      => '#000000',
-    -font             => 'Arial 10 bold',
+my $auto_scale_var      = 1;
+
+my $config_menu_btn = $control_panel->Menubutton(
+    -text             => "Configuracion",
+    -bg               => '#ffffff',
+    -fg               => '#131722',
+    -activebackground => '#75bbfd',
+    -activeforeground => 'white',
+    -relief           => 'raised',
     -cursor           => 'hand2',
+)->pack(-side => 'left', -padx => 5);
+
+my $config_menu = $config_menu_btn->Menu(-tearoff => 0);
+$config_menu_btn->configure(-menu => $config_menu);
+
+# Checkbutton: mostrar/ocultar la línea + etiqueta del último precio visible
+$config_menu->checkbutton(
+    -label            => "    Ultimo Precio",
+    -variable         => \$show_last_price_var,
+    -foreground       => '#131722',
+    -activeforeground => '#131722',
+    -selectcolor      => '#131722',
     -command          => sub {
         return unless $chart_engine;
         $chart_engine->{show_last_price} = $show_last_price_var;
         $chart_engine->request_render();
     },
-)->pack(-side => 'left', -padx => 5);
+);
+
+# Checkbutton: alterna el Modo de Escala (Auto / Manual). La casilla se
+# mantiene sincronizada aunque el modo cambie desde otro lugar (por
+# ejemplo al "Restablecer Vista"), ya que ChartEngine::set_auto_scale
+# actualiza directamente esta misma variable.
+$config_menu->checkbutton(
+    -label            => "    Escala Automatica",
+    -variable         => \$auto_scale_var,
+    -foreground       => '#131722',
+    -activeforeground => '#131722',
+    -selectcolor      => '#131722',
+    -command          => sub {
+        return unless $chart_engine;
+        $chart_engine->set_auto_scale($auto_scale_var);
+        $chart_engine->request_render();
+    },
+);
+
+$config_menu->separator;
+
+# Comando: restablece los parámetros visuales (Reset View)
+$config_menu->command(
+    -label            => "    Restablecer Vista (R)",
+    -foreground       => '#131722',
+    -activeforeground => '#131722',
+    -command          => sub {
+        return unless $chart_engine;
+        $chart_engine->reset_view();
+    },
+);
 
 # Espaciador estético intermedio
 $control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
 
-# Botón dinámico para conmutar el Modo de Escala (Auto / Manual)
-my $scale_btn;
-$scale_btn = $control_panel->Button(
-    -text             => "Escala: Auto",
-    -bg               => '#ffffff',
-    -fg               => '#75bbfd',
-    -activebackground => '#e0e0e0',
-    -activeforeground => '#3bb3e4',
-    -relief           => 'flat',
-    -cursor           => 'hand2',
-    -command          => sub {
-        return unless $chart_engine;
-        # Solo le decimos al motor que invierta la escala, él se encarga del resto
-        my $nuevo_modo = $chart_engine->{auto_scale} ? 0 : 1;
-        $chart_engine->set_auto_scale($nuevo_modo);
-        $chart_engine->request_render();
-    }
-)->pack(-side => 'left', -padx => 5);
+# --- MODO REPLAY ---
+# REPLAY: entra en modo de selección; el usuario elige una vela con un
+# click y sólo se carga (para el motor y los indicadores) el historial
+# hasta ese punto. << / >> retiran/agregan una vela al límite visible;
+# <<<< / >>>> hacen lo mismo mas rápido, de a 5 velas. EXIT abandona el
+# modo y restaura todo el historial.
+my ($replay_backward5_btn, $replay_backward_btn, $replay_forward_btn, $replay_forward5_btn, $replay_exit_btn);
 
-# Botón para restablecer los parámetros visuales (Reset View)
-$control_panel->Button(
-    -text             => "Restablecer Vista (R)",
+my $replay_btn = $control_panel->Button(
+    -text             => "REPLAY",
     -bg               => '#ffffff',
-    -fg               => '#131722',
-    -activebackground => '#ff4a4a',
+    -fg               => '#F23645',
+    -activebackground => '#F23645',
     -activeforeground => 'white',
     -relief           => 'flat',
     -cursor           => 'hand2',
+    -font             => 'Arial 9 bold',
     -command          => sub {
         return unless $chart_engine;
-        $chart_engine->reset_view();
-        # Sincronizamos el texto del botón de escala al volver a modo automático
-        $scale_btn->configure(-text => "Escala: Auto", -fg => '#3bb3e4');
+        $vwap_status_label->configure(
+            -text => "REPLAY: haz click en una vela para iniciar (Esc/click-derecho cancela)"
+        ) if $vwap_status_label;
+        $chart_engine->activate_replay_selection();
     }
-)->pack(-side => 'left', -padx => 10);
+)->pack(-side => 'left', -padx => 5);
+
+$replay_backward5_btn = $control_panel->Button(
+    -text             => "<<<<",
+    -bg               => '#ffffff',
+    -fg               => '#131722',
+    -activebackground => '#e0e0e0',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -state            => 'disabled',
+    -command          => sub {
+        $chart_engine->replay_backward(5) if $chart_engine;
+    }
+)->pack(-side => 'left', -padx => 2);
+
+$replay_backward_btn = $control_panel->Button(
+    -text             => "<<",
+    -bg               => '#ffffff',
+    -fg               => '#131722',
+    -activebackground => '#e0e0e0',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -state            => 'disabled',
+    -command          => sub {
+        $chart_engine->replay_backward() if $chart_engine;
+    }
+)->pack(-side => 'left', -padx => 2);
+
+$replay_forward_btn = $control_panel->Button(
+    -text             => ">>",
+    -bg               => '#ffffff',
+    -fg               => '#131722',
+    -activebackground => '#e0e0e0',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -state            => 'disabled',
+    -command          => sub {
+        $chart_engine->replay_forward() if $chart_engine;
+    }
+)->pack(-side => 'left', -padx => 2);
+
+$replay_forward5_btn = $control_panel->Button(
+    -text             => ">>>>",
+    -bg               => '#ffffff',
+    -fg               => '#131722',
+    -activebackground => '#e0e0e0',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -state            => 'disabled',
+    -command          => sub {
+        $chart_engine->replay_forward(5) if $chart_engine;
+    }
+)->pack(-side => 'left', -padx => 2);
+
+$replay_exit_btn = $control_panel->Button(
+    -text             => "EXIT",
+    -bg               => '#ffffff',
+    -fg               => '#787b86',
+    -activebackground => '#e0e0e0',
+    -relief           => 'flat',
+    -cursor           => 'hand2',
+    -state            => 'disabled',
+    -command          => sub {
+        $chart_engine->exit_replay() if $chart_engine;
+    }
+)->pack(-side => 'left', -padx => 5);
 
 # Etiqueta de estado para guiar al usuario mientras selecciona la vela de
 # ancla del VWAP (queda vacía el resto del tiempo)
@@ -749,7 +849,7 @@ $chart_engine = Market::ChartEngine->new(
     time_canvas       => $time_canvas,       # Inyección del eje horizontal de tiempo
     atr_canvas        => $atr_canvas,
     atr_axis_canvas   => $atr_axis_canvas,   # Inyección del eje vertical de volatilidad
-    widgets           => { main_window => $mw, scale_btn => $scale_btn }
+    widgets           => { main_window => $mw, auto_scale_var => \$auto_scale_var }
 );
 
 # Callback invocado por el motor cuando la selección de ancla del VWAP se
@@ -776,6 +876,31 @@ $chart_engine->{on_volume_profile_selection_cancelled} = sub {
 
 $chart_engine->{on_volume_profile_anchor_set} = sub {
     $vwap_status_label->configure(-text => "") if $vwap_status_label;
+};
+
+# --- Callbacks del Modo Replay: sincronizan el estado de los botones
+# (REPLAY / << / >> / EXIT) y el mensaje de estado con lo que hace el motor.
+$chart_engine->{on_replay_selection_cancelled} = sub {
+    $vwap_status_label->configure(-text => "") if $vwap_status_label;
+};
+
+$chart_engine->{on_replay_started} = sub {
+    $vwap_status_label->configure(-text => "") if $vwap_status_label;
+    $replay_btn->configure(-fg => '#787b86', -text => "REPLAY \x{25CF}") if $replay_btn;
+    $replay_backward5_btn->configure(-state => 'normal') if $replay_backward5_btn;
+    $replay_backward_btn->configure(-state => 'normal') if $replay_backward_btn;
+    $replay_forward_btn->configure(-state => 'normal')  if $replay_forward_btn;
+    $replay_forward5_btn->configure(-state => 'normal') if $replay_forward5_btn;
+    $replay_exit_btn->configure(-state => 'normal', -fg => '#F23645') if $replay_exit_btn;
+};
+
+$chart_engine->{on_replay_exited} = sub {
+    $replay_btn->configure(-fg => '#F23645', -text => "REPLAY") if $replay_btn;
+    $replay_backward5_btn->configure(-state => 'disabled') if $replay_backward5_btn;
+    $replay_backward_btn->configure(-state => 'disabled') if $replay_backward_btn;
+    $replay_forward_btn->configure(-state => 'disabled')  if $replay_forward_btn;
+    $replay_forward5_btn->configure(-state => 'disabled') if $replay_forward5_btn;
+    $replay_exit_btn->configure(-state => 'disabled', -fg => '#787b86') if $replay_exit_btn;
 };
 
 

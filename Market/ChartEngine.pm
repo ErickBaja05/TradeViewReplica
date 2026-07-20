@@ -79,6 +79,14 @@ sub new {
         # Mostrar/ocultar la línea + etiqueta del último precio visible
         show_last_price   => 1,
 
+        # --- Modo Replay ---
+        # replay_mode: 1 mientras el Modo Replay está activo (ya se eligió
+        # la vela de partida y sólo se muestra el historial hasta ahí).
+        # replay_selection_mode: 1 mientras se espera el click del usuario
+        # sobre la vela que marcará el punto de partida del Replay.
+        replay_mode            => 0,
+        replay_selection_mode  => 0,
+
         # Estado de Escalas ATR (Volatilidad)
         atr_auto_scale    => 1,
         atr_manual_y_max  => 10,
@@ -1128,6 +1136,153 @@ sub set_volume_profile_anchor_mode {
     $self->request_render();
 }
 
+=head1 MODO REPLAY
+
+Permite "viajar en el tiempo" dentro del histórico ya cargado: el usuario
+elige una vela con un click (igual que la selección de ancla del VWAP) y,
+a partir de ahí, sólo se consideran visibles/disponibles (para el motor,
+los indicadores y overlays) las velas hasta ese punto. Los botones de
+avance/retroceso mueven ese límite vela a vela, sin borrar ni recargar
+ningún dato: la implementación real vive en C<Market::MarketData>
+(C<replay_start>/C<replay_forward>/C<replay_backward>/C<replay_stop>).
+
+=cut
+
+=head2 activate_replay_selection()
+
+Activa el modo de selección de vela para el Modo Replay: el próximo click
+del usuario sobre el panel de precios fijará el punto de partida. Mientras
+este modo está activo, el arrastre normal (panning) queda desactivado y el
+cursor cambia para indicar que se espera un click de selección.
+
+=cut
+
+sub activate_replay_selection {
+    my ($self) = @_;
+    $self->{replay_selection_mode} = 1;
+
+    if (my $cv = $self->{price_canvas}) {
+        $cv->configure(-cursor => 'target');
+    }
+}
+
+=head2 cancel_replay_selection()
+
+Cancela el modo de selección de vela del Replay sin activarlo (por
+ejemplo al pulsar Escape o hacer click derecho). Devuelve el cursor del
+panel de precios a su estado normal.
+
+=cut
+
+sub cancel_replay_selection {
+    my ($self) = @_;
+    $self->{replay_selection_mode} = 0;
+
+    if (my $cv = $self->{price_canvas}) {
+        $cv->configure(-cursor => 'crosshair');
+    }
+}
+
+=head2 start_replay($index)
+
+Fija la vela elegida por el usuario (índice global dentro de la
+temporalidad activa) como punto de partida del Modo Replay: sólo las
+velas hasta ese punto (inclusive) quedan visibles. Reencuadra la vista
+para que esa vela quede al borde derecho del gráfico.
+
+=cut
+
+sub start_replay {
+    my ($self, $index) = @_;
+    return unless defined $index;
+
+    my $market_data = $self->{market_data};
+    $self->cancel_replay_selection();
+    return unless $market_data;
+
+    my $ok = $market_data->replay_start($index);
+    return unless $ok;
+
+    $self->{replay_mode} = 1;
+
+    # La vela elegida (nuevo "presente") queda pegada al borde derecho.
+    $self->{offset} = 0;
+
+    $self->{on_replay_started}->()
+        if ref($self->{on_replay_started}) eq 'CODE';
+
+    $self->request_render();
+}
+
+=head2 replay_forward($steps)
+
+Botones ">>" / ">>>>": avanza C<$steps> velas (por defecto 1) el límite
+del Modo Replay (revela las siguientes velas del historial). No hace nada
+si el Replay no está activo; si el avance solicitado supera la última
+vela disponible, avanza hasta ahí sin fallar.
+
+=cut
+
+sub replay_forward {
+    my ($self, $steps) = @_;
+    return unless $self->{replay_mode};
+
+    my $market_data = $self->{market_data};
+    return unless $market_data;
+
+    my $moved = $market_data->replay_forward($steps);
+    return unless $moved;
+
+    $self->{offset} = 0;
+    $self->request_render();
+}
+
+=head2 replay_backward($steps)
+
+Botones "<<" / "<<<<": retrocede C<$steps> velas (por defecto 1) el
+límite del Modo Replay (retira las últimas velas visibles). No hace nada
+si el Replay no está activo; nunca deja menos de una vela visible.
+
+=cut
+
+sub replay_backward {
+    my ($self, $steps) = @_;
+    return unless $self->{replay_mode};
+
+    my $market_data = $self->{market_data};
+    return unless $market_data;
+
+    my $moved = $market_data->replay_backward($steps);
+    return unless $moved;
+
+    $self->{offset} = 0;
+    $self->request_render();
+}
+
+=head2 exit_replay()
+
+Botón "EXIT": abandona el Modo Replay y restaura la visibilidad de todo
+el historial cargado.
+
+=cut
+
+sub exit_replay {
+    my ($self) = @_;
+    return unless $self->{replay_mode} || $self->{replay_selection_mode};
+
+    my $market_data = $self->{market_data};
+    $market_data->replay_stop() if $market_data;
+
+    $self->{replay_mode} = 0;
+    $self->cancel_replay_selection();
+    $self->{offset} = 0;
+
+    $self->{on_replay_exited}->()
+        if ref($self->{on_replay_exited}) eq 'CODE';
+
+    $self->request_render();
+}
+
 sub bind_all_canvas {
     my ($self) = @_;
 
@@ -1155,6 +1310,11 @@ sub bind_all_canvas {
     # Volume Profile, si alguna está activa
     if ($price_cv) {
         $price_cv->Tk::bind('<Button-3>', sub {
+            if ($self->{replay_selection_mode}) {
+                $self->cancel_replay_selection();
+                $self->{on_replay_selection_cancelled}->()
+                    if ref($self->{on_replay_selection_cancelled}) eq 'CODE';
+            }
             if ($self->{vwap_anchor_selection_mode}) {
                 $self->cancel_vwap_anchor_selection();
                 $self->{on_vwap_selection_cancelled}->()
@@ -1211,6 +1371,19 @@ sub bind_all_canvas {
             my $widget = shift; my $e = $widget->XEvent;
             return unless $e;
 
+            # --- Selección de vela de partida para el Modo Replay ---
+            # Si estamos esperando el click de selección (botón REPLAY), el
+            # click sobre el panel de precios elige la vela y NO debe
+            # iniciar un arrastre/panning normal.
+            if ($self->{replay_selection_mode} && $canvas == $price_cv) {
+                my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
+                if ($scale) {
+                    my $index = $scale->x_to_index($e->x);
+                    $self->start_replay($index);
+                }
+                return;
+            }
+
             # --- Selección de vela de ancla para el VWAP Anclado ---
             # Si estamos esperando el click de anclaje (activado desde el
             # menú de indicadores), el click sobre el panel de precios elige
@@ -1240,6 +1413,7 @@ sub bind_all_canvas {
 
         $canvas->Tk::bind('<B1-Motion>', sub {
             my $widget = shift; my $e = $widget->XEvent;
+            return if $self->{replay_selection_mode};
             return if $self->{vwap_anchor_selection_mode};
             return if $self->{volume_profile_anchor_selection_mode};
             return unless $e && defined $self->{last_drag_x} && defined $self->{last_drag_y};
@@ -1440,6 +1614,11 @@ sub bind_events {
     # Escape cancela la selección de vela de ancla del VWAP o del Volume
     # Profile, si alguna está activa
     $mw->Tk::bind('<Key-Escape>', sub {
+        if ($self->{replay_selection_mode}) {
+            $self->cancel_replay_selection();
+            $self->{on_replay_selection_cancelled}->()
+                if ref($self->{on_replay_selection_cancelled}) eq 'CODE';
+        }
         if ($self->{vwap_anchor_selection_mode}) {
             $self->cancel_vwap_anchor_selection();
             $self->{on_vwap_selection_cancelled}->()
@@ -2043,12 +2222,11 @@ sub set_auto_scale {
     $self->{auto_scale} = $mode;
     $self->{atr_auto_scale} = $mode;
 
-    # Actualizamos la estética del botón de la interfaz
-    if (my $btn = $self->{widgets}->{scale_btn}) {
-        $btn->configure(
-            -text => $mode ? "Escala: Auto" : "Escala: Manual",
-            -fg   => $mode ? '#3bb3e4' : '#ff9800'
-        );
+    # Sincronizamos la casilla "Escala Automática" del menú Configuración
+    # con el nuevo estado, aunque el cambio se haya originado en otro lugar
+    # (por ejemplo al Restablecer Vista), para que nunca quede desfasada.
+    if (my $var_ref = $self->{widgets}->{auto_scale_var}) {
+        $$var_ref = $mode;
     }
 }
 
