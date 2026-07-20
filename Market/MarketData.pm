@@ -12,7 +12,15 @@ our %BLOCK_MINUTES = (
    '2h'  => 120,
    '4h'  => 240,
    '1d'  => 1440,
+   '1w'  => 10080,
 );
+
+# Epoch de referencia (segundos) de un lunes 00:00:00 UTC cualquiera
+# (05-ene-1970). Se usa únicamente para anclar los cajones de la
+# temporalidad semanal ('1w') al inicio de semana (lunes), ya que el
+# epoch 0 (01-ene-1970) fue un jueves y el alineamiento por defecto
+# (epoch % block_seconds) dejaría los cajones arrancando en jueves.
+use constant MONDAY_EPOCH_REF => 345600;
 
 =head1 NAME
 
@@ -41,6 +49,7 @@ sub new {
          '2h'  => [],
          '4h'  => [],
          '1d'  => [],
+         '1w'  => [],
       },
       # servirá para almacenar las velas
       candles => []
@@ -240,7 +249,16 @@ sub build_tf_candles {
          my $epoch = eval { timegm($ss, $mm, $hh, $day, $mon - 1, $year) };
          next unless defined $epoch;
 
-         my $bucket_epoch = $epoch - ($epoch % $block_seconds);
+         # Para la mayoría de temporalidades el cajón se calcula alineando
+         # directamente al epoch (0 = jueves 00:00 UTC), lo cual funciona
+         # bien para bloques que dividen exactamente al día (5m..1d). Para
+         # la temporalidad semanal ('1w') eso dejaría los cajones arrancando
+         # en jueves en vez de lunes (convención de TradingView), así que
+         # alineamos contra un epoch de referencia que sí cae en lunes.
+         my $bucket_epoch =
+              $tf eq '1w'
+            ? $epoch - (($epoch - MONDAY_EPOCH_REF) % $block_seconds)
+            : $epoch - ($epoch % $block_seconds);
 
          # Si no hay bloque activo, o si saltamos a un nuevo bloque de tiempo
          if (!defined $current_bucket_epoch || $bucket_epoch != $current_bucket_epoch) {
