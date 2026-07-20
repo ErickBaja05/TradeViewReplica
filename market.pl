@@ -99,6 +99,7 @@ my %vars = (
 
     show_supertrend   => 0,
     show_halftrend    => 0,
+    show_range_filter => 0,
     show_fvg          => 0,
     show_orderblocks  => 0,
     show_trendchannel => 0,
@@ -157,6 +158,7 @@ my @groups = (
         items => [
             ["SuperTrend",                "show_supertrend",  "#26a69a"],
             ["HalfTrend",                 "show_halftrend",   "#2962ff"],
+            ["Range Filter",              "show_range_filter","#ff9800"],
             ["FVG",                       "show_fvg",         "#e91e63"],
             ["Order Blocks",              "show_orderblocks", "#f0d908"],
             ["Trend Channel",             "show_trendchannel","#2196f3"],

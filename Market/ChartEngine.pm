@@ -11,6 +11,7 @@ use Market::Indicators::FVG;
 use Market::Indicators::Structure;
 use Market::Indicators::Supertrend;
 use Market::Indicators::HalfTrend;
+use Market::Indicators::RangeFilter;
 use Market::Indicators::TrendChannel;
 use Market::Indicators::OrderBlocks;
 use Market::Indicators::VWAPAnchored;
@@ -34,6 +35,7 @@ use Market::Overlays::EQL;
 use Market::Overlays::Liquidity;
 use Market::Overlays::Supertrend;
 use Market::Overlays::HalfTrend;
+use Market::Overlays::RangeFilter;
 use Market::Overlays::TrendChannel;
 use Market::Overlays::OrderBlocks;
 use Market::Overlays::VWAPAnchored;
@@ -107,6 +109,7 @@ sub new {
         show_lq_run       => 0,
         show_supertrend   => 0,
         show_halftrend    => 0,
+        show_range_filter => 0,
         show_fvg          => 0,
         show_orderblocks  => 0,
         show_trendchannel => 0,
@@ -193,6 +196,10 @@ sub new {
             channel_deviation => 2,
             atr_period        => 100,
         ),
+        range_filter_engine => Market::Indicators::RangeFilter->new(
+            period     => 100,
+            multiplier => 3.0,
+        ),
         orderblocks_engine => Market::Indicators::OrderBlocks->new(
             swing_length    => 10,
             history_to_keep => 20,
@@ -240,6 +247,7 @@ sub new {
         liquidity_overlay        => Market::Overlays::Liquidity->new(),
         supertrend_overlay       => Market::Overlays::Supertrend->new(),
         halftrend_overlay        => Market::Overlays::HalfTrend->new(),
+        range_filter_overlay     => Market::Overlays::RangeFilter->new(),
         fvg_overlay              => Market::Overlays::FVG->new(),
         orderblocks_overlay      => Market::Overlays::OrderBlocks->new(),
         trendchannel_overlay     => Market::Overlays::TrendChannel->new(),
@@ -338,7 +346,7 @@ sub render {
      || $self->{show_fvg}
      || $self->{show_bsl} || $self->{show_ssl}
      || $self->{show_lq_sweep} || $self->{show_lq_grab} || $self->{show_lq_run}
-     || $self->{show_supertrend} || $self->{show_halftrend} 
+     || $self->{show_supertrend} || $self->{show_halftrend} || $self->{show_range_filter}
      || $self->{show_orderblocks} || $self->{show_trendchannel}
      || $self->{show_anchors} || $self->{show_multi_vwap}) {
         $self->update_smc_overlay($self->{market_data}->last_index());
@@ -413,6 +421,9 @@ sub render {
 
             $self->{halftrend_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
                 if $self->{show_halftrend};
+
+            $self->{range_filter_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_range_filter};
 
             $self->{anchors_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
                 if $self->{show_anchors};
@@ -513,6 +524,11 @@ sub update_smc_overlay {
         $until_index
     );
 
+    my $range_filter_result = $self->{range_filter_engine}->calculate_until(
+        $candles_full,
+        $until_index
+    );
+
     my $orderblocks_result = $self->{orderblocks_engine}->calculate_until(
         $candles_full,
         $until_index
@@ -571,6 +587,7 @@ sub update_smc_overlay {
 
     $self->{supertrend_overlay}->set_result($supertrend_result);
     $self->{halftrend_overlay}->set_result($halftrend_result);
+    $self->{range_filter_overlay}->set_result($range_filter_result);
     $self->{orderblocks_overlay}->set_result($orderblocks_result);
     $self->{trendchannel_overlay}->set_result($trendchannel_result);
     $self->{anchors_overlay}->set_result($anchors_result);
