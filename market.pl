@@ -28,13 +28,80 @@ $mw->geometry("${width}x${height}+0+0");
 my $control_panel = $mw->Frame(-bg => '#fbfcf8', -relief => 'raised', -bd => 1)
                        ->pack(-side => 'top', -fill => 'x', -ipady => 4);
 
+# Declaración adelantada de la referencia del motor para usar en los callbacks
+my $chart_engine;
+
+# --- MENÚ DESPLEGABLE "CONFIGURACIÓN" ---
+# Agrupa ajustes generales de la vista que antes eran controles sueltos en
+# la barra: mostrar/ocultar el último precio, alternar la escala
+# Auto/Manual y restablecer la vista a sus valores por defecto.
+my $show_last_price_var = 1;
+my $auto_scale_var      = 1;
+
+my $config_menu_btn = $control_panel->Menubutton(
+    -text             => "Configuracion",
+    -bg               => '#ffffff',
+    -fg               => '#131722',
+    -activebackground => '#75bbfd',
+    -activeforeground => 'white',
+    -relief           => 'raised',
+    -cursor           => 'hand2',
+)->pack(-side => 'left', -padx => 5);
+
+my $config_menu = $config_menu_btn->Menu(-tearoff => 0);
+$config_menu_btn->configure(-menu => $config_menu);
+
+# Checkbutton: mostrar/ocultar la línea + etiqueta del último precio visible
+$config_menu->checkbutton(
+    -label            => "    Ultimo Precio",
+    -variable         => \$show_last_price_var,
+    -foreground       => '#131722',
+    -activeforeground => '#131722',
+    -selectcolor      => '#131722',
+    -command          => sub {
+        return unless $chart_engine;
+        $chart_engine->{show_last_price} = $show_last_price_var;
+        $chart_engine->request_render();
+    },
+);
+
+# Checkbutton: alterna el Modo de Escala (Auto / Manual). La casilla se
+# mantiene sincronizada aunque el modo cambie desde otro lugar (por
+# ejemplo al "Restablecer Vista"), ya que ChartEngine::set_auto_scale
+# actualiza directamente esta misma variable.
+$config_menu->checkbutton(
+    -label            => "    Escala Automatica",
+    -variable         => \$auto_scale_var,
+    -foreground       => '#131722',
+    -activeforeground => '#131722',
+    -selectcolor      => '#131722',
+    -command          => sub {
+        return unless $chart_engine;
+        $chart_engine->set_auto_scale($auto_scale_var);
+        $chart_engine->request_render();
+    },
+);
+
+$config_menu->separator;
+
+# Comando: restablece los parámetros visuales (Reset View)
+$config_menu->command(
+    -label            => "    Restablecer Vista (R)",
+    -foreground       => '#131722',
+    -activeforeground => '#131722',
+    -command          => sub {
+        return unless $chart_engine;
+        $chart_engine->reset_view();
+    },
+);
+
+# Espaciador estético intermedio
+$control_panel->Label(-text => "|", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
+
 # Control de Temporalidades (1m, 5m, 15m, 1h, 2h, 4h, 1d) mediante un menú
 # desplegable único, en lugar de un botón por cada temporalidad.
 my $tf_label = $control_panel->Label(-text => "Temporalidad:", -bg => '#fbfcf8', -fg => '#b1b5be', -font => 'Arial 10 bold')
                              ->pack(-side => 'left', -padx => 10);
-
-# Declaración adelantada de la referencia del motor para usar en los callbacks
-my $chart_engine;
 
 # Declaración adelantada de la etiqueta de estado del VWAP Anclado (se crea
 # más abajo, pero se usa desde callbacks definidos antes en el archivo)
@@ -59,7 +126,7 @@ my $tf_menu = $control_panel->Optionmenu(
 )->pack(-side => 'left', -padx => 3);
 
 # Espaciador estético intermedio
-$control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
+$control_panel->Label(-text => "|", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
 
 my $indicator_label = $control_panel->Label(-text => "Indicadores:", -bg => '#fbfcf8', -fg => '#b1b5be', -font => 'Arial 10 bold')
                              ->pack(-side => 'left', -padx => 10);
@@ -272,11 +339,7 @@ for my $group (@groups) {
 }
 
 # Espaciador estético intermedio
-$control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
-
-my $anchored_indicator_label = $control_panel->Label(-text => "Indicadores Anclados:", -bg => '#fbfcf8', -fg => '#b1b5be', -font => 'Arial 10 bold')
-                             ->pack(-side => 'left', -padx => 10);
-
+# $control_panel->Label(-text => "|", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
 
 my $anchor_menu = $control_panel->Menubutton(
     -text             => "Anchored Indicators",
@@ -316,7 +379,7 @@ $menu2->checkbutton(
                 # Modo "Elegir pivote": en vez de activarlo de inmediato,
                 # entramos en modo de selección y esperamos su click sobre
                 # una vela (comportamiento clásico).
-                $vwap_status_label->configure(-text => "VWAP: haz click en una vela para anclar (Esc/click-derecho cancela)")
+                $vwap_status_label->configure(-text => "VWAP: haz click en una vela para anclar")
                     if $vwap_status_label;
                 $chart_engine->activate_vwap_anchor_selection();
             }
@@ -374,7 +437,7 @@ for my $opt (@vwap_anchor_modes) {
 
                 if ($vars{show_vwap_anchored}) {
                     # El indicador ya estaba activo: pedimos el click ahora.
-                    $vwap_status_label->configure(-text => "VWAP: haz click en una vela para anclar (Esc/click-derecho cancela)")
+                    $vwap_status_label->configure(-text => "VWAP: haz click en una vela para anclar")
                         if $vwap_status_label;
                     $chart_engine->activate_vwap_anchor_selection();
                 }
@@ -451,7 +514,7 @@ $menu2->checkbutton(
             if ($vp_anchor_mode_seleccionada eq 'pivot') {
                 # Modo "Elegir pivote": entramos en modo de selección y
                 # esperamos su click sobre una vela (comportamiento clásico).
-                $vwap_status_label->configure(-text => "Volume Profile: haz click en una vela para anclar (Esc/click-derecho cancela)")
+                $vwap_status_label->configure(-text => "Volume Profile: haz click en una vela para anclar")
                     if $vwap_status_label;
                 $chart_engine->activate_volume_profile_anchor_selection();
             }
@@ -501,7 +564,7 @@ for my $opt (@vp_anchor_modes) {
 
                 if ($vars{show_volume_profile_anchored}) {
                     # El indicador ya estaba activo: pedimos el click ahora.
-                    $vwap_status_label->configure(-text => "Volume Profile: haz click en una vela para anclar (Esc/click-derecho cancela)")
+                    $vwap_status_label->configure(-text => "Volume Profile: haz click en una vela para anclar")
                         if $vwap_status_label;
                     $chart_engine->activate_volume_profile_anchor_selection();
                 }
@@ -615,74 +678,7 @@ $menu2->cascade(
 );
 
 # Espaciador estético intermedio
-$control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
-
-# --- MENÚ DESPLEGABLE "CONFIGURACIÓN" ---
-# Agrupa ajustes generales de la vista que antes eran controles sueltos en
-# la barra: mostrar/ocultar el último precio, alternar la escala
-# Auto/Manual y restablecer la vista a sus valores por defecto.
-my $show_last_price_var = 1;
-my $auto_scale_var      = 1;
-
-my $config_menu_btn = $control_panel->Menubutton(
-    -text             => "Configuracion",
-    -bg               => '#ffffff',
-    -fg               => '#131722',
-    -activebackground => '#75bbfd',
-    -activeforeground => 'white',
-    -relief           => 'raised',
-    -cursor           => 'hand2',
-)->pack(-side => 'left', -padx => 5);
-
-my $config_menu = $config_menu_btn->Menu(-tearoff => 0);
-$config_menu_btn->configure(-menu => $config_menu);
-
-# Checkbutton: mostrar/ocultar la línea + etiqueta del último precio visible
-$config_menu->checkbutton(
-    -label            => "    Ultimo Precio",
-    -variable         => \$show_last_price_var,
-    -foreground       => '#131722',
-    -activeforeground => '#131722',
-    -selectcolor      => '#131722',
-    -command          => sub {
-        return unless $chart_engine;
-        $chart_engine->{show_last_price} = $show_last_price_var;
-        $chart_engine->request_render();
-    },
-);
-
-# Checkbutton: alterna el Modo de Escala (Auto / Manual). La casilla se
-# mantiene sincronizada aunque el modo cambie desde otro lugar (por
-# ejemplo al "Restablecer Vista"), ya que ChartEngine::set_auto_scale
-# actualiza directamente esta misma variable.
-$config_menu->checkbutton(
-    -label            => "    Escala Automatica",
-    -variable         => \$auto_scale_var,
-    -foreground       => '#131722',
-    -activeforeground => '#131722',
-    -selectcolor      => '#131722',
-    -command          => sub {
-        return unless $chart_engine;
-        $chart_engine->set_auto_scale($auto_scale_var);
-        $chart_engine->request_render();
-    },
-);
-
-$config_menu->separator;
-
-# Comando: restablece los parámetros visuales (Reset View)
-$config_menu->command(
-    -label            => "    Restablecer Vista (R)",
-    -foreground       => '#131722',
-    -activeforeground => '#131722',
-    -command          => sub {
-        return unless $chart_engine;
-        $chart_engine->reset_view();
-    },
-);
-
-# Espaciador estético intermedio
-$control_panel->Label(-text => " | ", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
+$control_panel->Label(-text => "|", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
 
 # --- MODO REPLAY ---
 # REPLAY: entra en modo de selección; el usuario elige una vela con un
@@ -704,7 +700,7 @@ my $replay_btn = $control_panel->Button(
     -command          => sub {
         return unless $chart_engine;
         $vwap_status_label->configure(
-            -text => "REPLAY: haz click en una vela para iniciar (Esc/click-derecho cancela)"
+            -text => "REPLAY: haz click en una vela para iniciar"
         ) if $vwap_status_label;
         $chart_engine->activate_replay_selection();
     }
