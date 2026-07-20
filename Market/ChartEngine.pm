@@ -11,7 +11,7 @@ use Market::Indicators::FVG;
 use Market::Indicators::Structure;
 use Market::Indicators::Supertrend;
 use Market::Indicators::HalfTrend;
-use Market::Indicators::Channel;
+use Market::Indicators::TrendChannel;
 use Market::Indicators::OrderBlocks;
 use Market::Indicators::VWAPAnchored;
 use Market::Indicators::VolumeProfileAnchored;
@@ -34,7 +34,7 @@ use Market::Overlays::EQL;
 use Market::Overlays::Liquidity;
 use Market::Overlays::Supertrend;
 use Market::Overlays::HalfTrend;
-use Market::Overlays::Channel;
+use Market::Overlays::TrendChannel;
 use Market::Overlays::OrderBlocks;
 use Market::Overlays::VWAPAnchored;
 use Market::Overlays::VolumeProfileAnchored;
@@ -109,7 +109,7 @@ sub new {
         show_halftrend    => 0,
         show_fvg          => 0,
         show_orderblocks  => 0,
-        show_channel      => 0,
+        show_trendchannel => 0,
         smc_cache_key     => undef,
 
         # --- Anchors (sección Volume): pivotes altos/bajos + pivotes
@@ -199,8 +199,9 @@ sub new {
             box_width       => 2.5,
             atr_period      => 50,
         ),
-        channel_engine  => Market::Indicators::Channel->new(
-
+        trendchannel_engine => Market::Indicators::TrendChannel->new(
+            length    => 100,
+            deviation => 2,
         ),
         vwap_anchored_engine => Market::Indicators::VWAPAnchored->new(
             std_mult => 3,
@@ -241,7 +242,7 @@ sub new {
         halftrend_overlay        => Market::Overlays::HalfTrend->new(),
         fvg_overlay              => Market::Overlays::FVG->new(),
         orderblocks_overlay      => Market::Overlays::OrderBlocks->new(),
-        channel_overlay          => Market::Overlays::Channel->new(),
+        trendchannel_overlay     => Market::Overlays::TrendChannel->new(),
         vwap_anchored_overlay    => Market::Overlays::VWAPAnchored->new(
             sigma_range => 1,
         ),
@@ -338,7 +339,7 @@ sub render {
      || $self->{show_bsl} || $self->{show_ssl}
      || $self->{show_lq_sweep} || $self->{show_lq_grab} || $self->{show_lq_run}
      || $self->{show_supertrend} || $self->{show_halftrend} 
-     || $self->{show_orderblocks} || $self->{show_channel}
+     || $self->{show_orderblocks} || $self->{show_trendchannel}
      || $self->{show_anchors} || $self->{show_multi_vwap}) {
         $self->update_smc_overlay($self->{market_data}->last_index());
         $self->update_zigzag_internal_overlay() if $self->{show_zigzag_int};
@@ -362,8 +363,8 @@ sub render {
                 $self->{liquidity_overlay}->draw($self->{price_canvas}, $scale, $start, $end);
             }
 
-            $self->{channel_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
-                if $self->{show_channel};
+            $self->{trendchannel_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_trendchannel};
             $self->{fvg_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
                 if $self->{show_fvg};
             
@@ -517,7 +518,7 @@ sub update_smc_overlay {
         $until_index
     );
 
-    my $channel_result = $self->{channel_engine}->calculate_until(
+    my $trendchannel_result = $self->{trendchannel_engine}->calculate_until(
         $candles_full,
         $until_index
     );
@@ -571,7 +572,7 @@ sub update_smc_overlay {
     $self->{supertrend_overlay}->set_result($supertrend_result);
     $self->{halftrend_overlay}->set_result($halftrend_result);
     $self->{orderblocks_overlay}->set_result($orderblocks_result);
-    $self->{channel_overlay}->set_result($channel_result);
+    $self->{trendchannel_overlay}->set_result($trendchannel_result);
     $self->{anchors_overlay}->set_result($anchors_result);
     $self->{multi_vwap_overlay}->set_result($multi_vwap_result);
 

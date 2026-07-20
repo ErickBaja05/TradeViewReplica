@@ -101,7 +101,7 @@ my %vars = (
     show_halftrend    => 0,
     show_fvg          => 0,
     show_orderblocks  => 0,
-    show_channel      => 0,
+    show_trendchannel => 0,
 
     show_vwap_anchored => 0,
     show_volume_profile_anchored => 0,
@@ -159,7 +159,7 @@ my @groups = (
             ["HalfTrend",                 "show_halftrend",   "#2962ff"],
             ["FVG",                       "show_fvg",         "#e91e63"],
             ["Order Blocks",              "show_orderblocks", "#f0d908"],
-            ["Channel",                   "show_channel",     "#337c4f"],
+            ["Trend Channel",             "show_trendchannel","#2196f3"],
         ],
     },
 );
