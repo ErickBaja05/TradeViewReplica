@@ -171,6 +171,8 @@ my %vars = (
     show_orderblocks  => 0,
     show_trendchannel => 0,
 
+    show_channel      => 0,
+
     show_vwap_anchored => 0,
     show_volume_profile_anchored => 0,
 
@@ -227,10 +229,11 @@ my @groups = (
         items => [
             ["SuperTrend",                "show_supertrend",  "#26a69a"],
             ["HalfTrend",                 "show_halftrend",   "#2962ff"],
-            ["Range Filter",              "show_range_filter","#ff9800"],
+            #["Range Filter",              "show_range_filter","#ff9800"],
             ["FVG",                       "show_fvg",         "#e91e63"],
             ["Order Blocks",              "show_orderblocks", "#f0d908"],
-            ["Trend Channel",             "show_trendchannel","#2196f3"],
+            #["Trend Channel",             "show_trendchannel","#2196f3"],
+            ["Channel",                   "show_channel",     "#9c27b0"],
         ],
     },
 );

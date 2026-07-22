@@ -47,6 +47,9 @@ use Market::Overlays::GhostLines;
 use Market::Overlays::GhostVWAP;
 use Market::Overlays::MultiAnchoredVWAP;
 
+use Market::Indicators::Channel;
+use Market::Overlays::Channel;
+
 =head1 NOMBRE
 Market::ChartEngine - Motor gráfico central y orquestador de la interfaz.
 =cut
@@ -262,6 +265,17 @@ sub new {
         volume_profile_anchored_overlay => Market::Overlays::VolumeProfileAnchored->new(
             sigma_range => 1,
         ),
+        # En el hash $self, dentro de new():
+        show_channel     => 0,
+        channel_engine   => Market::Indicators::Channel->new(
+            length    => 100,
+            deviation => 2.0,
+        ),
+        channel_overlay  => Market::Overlays::Channel->new(
+            up_color => '#26a69a',
+            dn_color => '#ef5350',
+            width    => 2,
+        ),
     };
 
     bless $self, $class;
@@ -347,7 +361,7 @@ sub render {
      || $self->{show_choch_ext} || $self->{show_choch_int}
      || $self->{show_eqh} || $self->{show_eql}
      || $self->{show_fibonacci}
-     || $self->{show_levels}
+     || $self->{show_levels} || $self->{show_channel}
      || $self->{show_fvg}
      || $self->{show_bsl} || $self->{show_ssl}
      || $self->{show_lq_sweep} || $self->{show_lq_grab} || $self->{show_lq_run}
@@ -430,6 +444,10 @@ sub render {
 
             $self->{range_filter_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
                 if $self->{show_range_filter};
+
+
+            $self->{channel_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_channel};
 
             # Ghost Lines (zigzag + rastro horizontal) primero, para quedar
             # por debajo del VWAP fantasma y de los marcadores de pivote.
@@ -549,6 +567,7 @@ sub update_smc_overlay {
     # 2. Bucle Incremental: Alimentar velas una a una
     my ($liq_result, $fvg_result, $structure_result, $orderblocks_result);
     my ($supertrend_result, $halftrend_result, $range_filter_result);
+    my $channel_result;
     my $anchors_result;
 
     for my $i ($start_idx .. $until_index) {
@@ -564,6 +583,8 @@ sub update_smc_overlay {
         $supertrend_result   = $self->{supertrend_engine}->update_last($candles_full, $atr_values, $i);
         $halftrend_result    = $self->{halftrend_engine}->update_last($candles_full, $atr_values, $i);
         $range_filter_result = $self->{range_filter_engine}->update_last($candles_full, $atr_values, $i);
+
+        $channel_result = $self->{channel_engine}->update_last($candles_full, $atr_values, $i);
 
         # Anchors ("Ghost Anchors" / "Ghost Lines" / "Ghost VWAP"): mismo
         # contrato incremental C<update_last($candles, $atr_values, $i)>.
@@ -617,6 +638,8 @@ if ($self->{show_multi_vwap}) {
     $self->{halftrend_overlay}->set_result($halftrend_result);
     $self->{range_filter_overlay}->set_result($range_filter_result);
     $self->{orderblocks_overlay}->set_result($orderblocks_result);
+
+    $self->{channel_overlay}->set_result($channel_result);
 
     $self->{ghost_anchors_overlay}->set_result($anchors_result);
     $self->{ghost_lines_overlay}->set_result($anchors_result);
