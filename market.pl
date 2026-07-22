@@ -794,96 +794,228 @@ $menu2->cascade(
 # Espaciador estético intermedio
 $control_panel->Label(-text => "|", -bg => '#fbfcf8', -fg => '#d1d4dc')->pack(-side => 'left', -padx => 10);
 
-# --- MODO REPLAY ---
-# REPLAY: entra en modo de selección; el usuario elige una vela con un
-# click y sólo se carga (para el motor y los indicadores) el historial
-# hasta ese punto. << / >> retiran/agregan una vela al límite visible;
-# <<<< / >>>> hacen lo mismo mas rápido, de a 5 velas. EXIT abandona el
-# modo y restaura todo el historial.
-my ($replay_backward5_btn, $replay_backward_btn, $replay_forward_btn, $replay_forward5_btn, $replay_exit_btn);
+# --- MENÚ REPLAY ---
+# Agrupa todos los controles de replay en un menú desplegable:
+# - Iniciar REPLAY (entra en modo selección)
+# - Controles de navegación: <<<<, <<, >>, >>>>
+# - Reproducción automática: PLAY/STOP
+# - Control de velocidad (slider en ventana emergente)
+# - Salir (EXIT)
+# --- MENÚ REPLAY ---
+my ($replay_play_btn, $replay_stop_btn);
+my $replay_speed_var = 1.0;
+my $replay_status_label;
+my $replay_playback_active = 0;
 
-my $replay_btn = $control_panel->Button(
+# Variables para guardar índices de las entradas del menú
+my ($play_index, $stop_index, $speed_index, $exit_index);
+
+my $replay_menu_btn = $control_panel->Menubutton(
     -text             => "REPLAY",
     -bg               => '#ffffff',
     -fg               => '#F23645',
     -activebackground => '#F23645',
     -activeforeground => 'white',
-    -relief           => 'flat',
+    -relief           => 'raised',
     -cursor           => 'hand2',
     -font             => 'Arial 9 bold',
-    -command          => sub {
-        return unless $chart_engine;
-        $vwap_status_label->configure(
-            -text => "REPLAY: haz click en una vela para iniciar"
-        ) if $vwap_status_label;
-        $chart_engine->activate_replay_selection();
-    }
 )->pack(-side => 'left', -padx => 5);
 
-$replay_backward5_btn = $control_panel->Button(
-    -text             => "<<<<",
-    -bg               => '#ffffff',
-    -fg               => '#131722',
-    -activebackground => '#e0e0e0',
-    -relief           => 'flat',
-    -cursor           => 'hand2',
+my $replay_menu = $replay_menu_btn->Menu(-tearoff => 0);
+$replay_menu_btn->configure(-menu => $replay_menu);
+
+# --- Comando para iniciar REPLAY (modo selección) ---
+$replay_menu->command(
+    -label            => "    Iniciar Replay",
+    -foreground       => '#F23645',
+    -activeforeground => '#F23645',
+    -command          => sub {
+        return unless $chart_engine;
+        $replay_status_label->configure(
+            -text => "REPLAY: haz click en una vela para iniciar"
+        ) if $replay_status_label;
+        $chart_engine->activate_replay_selection();
+    },
+);
+
+$replay_menu->separator;
+
+# --- Submenú de Navegación ---
+my $nav_submenu = $replay_menu->Menu(-tearoff => 0);
+
+$nav_submenu->command(
+    -label            => "    Retroceder 5 (<<<<)",
+    -foreground       => '#131722',
+    -activeforeground => '#131722',
     -state            => 'disabled',
     -command          => sub {
         $chart_engine->replay_backward(5) if $chart_engine;
-    }
-)->pack(-side => 'left', -padx => 2);
+    },
+);
 
-$replay_backward_btn = $control_panel->Button(
-    -text             => "<<",
-    -bg               => '#ffffff',
-    -fg               => '#131722',
-    -activebackground => '#e0e0e0',
-    -relief           => 'flat',
-    -cursor           => 'hand2',
+$nav_submenu->command(
+    -label            => "    Retroceder (<<)",
+    -foreground       => '#131722',
+    -activeforeground => '#131722',
     -state            => 'disabled',
     -command          => sub {
         $chart_engine->replay_backward() if $chart_engine;
-    }
-)->pack(-side => 'left', -padx => 2);
+    },
+);
 
-$replay_forward_btn = $control_panel->Button(
-    -text             => ">>",
-    -bg               => '#ffffff',
-    -fg               => '#131722',
-    -activebackground => '#e0e0e0',
-    -relief           => 'flat',
-    -cursor           => 'hand2',
+$nav_submenu->command(
+    -label            => "    Avanzar (>>)",
+    -foreground       => '#131722',
+    -activeforeground => '#131722',
     -state            => 'disabled',
     -command          => sub {
         $chart_engine->replay_forward() if $chart_engine;
-    }
-)->pack(-side => 'left', -padx => 2);
+    },
+);
 
-$replay_forward5_btn = $control_panel->Button(
-    -text             => ">>>>",
-    -bg               => '#ffffff',
-    -fg               => '#131722',
-    -activebackground => '#e0e0e0',
-    -relief           => 'flat',
-    -cursor           => 'hand2',
+$nav_submenu->command(
+    -label            => "    Avanzar 5 (>>>>)",
+    -foreground       => '#131722',
+    -activeforeground => '#131722',
     -state            => 'disabled',
     -command          => sub {
         $chart_engine->replay_forward(5) if $chart_engine;
-    }
-)->pack(-side => 'left', -padx => 2);
+    },
+);
 
-$replay_exit_btn = $control_panel->Button(
-    -text             => "EXIT",
-    -bg               => '#ffffff',
-    -fg               => '#787b86',
-    -activebackground => '#e0e0e0',
-    -relief           => 'flat',
-    -cursor           => 'hand2',
+$replay_menu->cascade(
+    -label      => "    Navegacion",
+    -menu       => $nav_submenu,
+    -foreground => '#131722',
+);
+
+$replay_menu->separator;
+
+# --- Comando PLAY (reproducción automática) ---
+# Guardamos el índice de esta entrada para modificarla después
+$play_index = $replay_menu->index('end') + 1;
+
+$replay_menu->command(
+    -label            => "    > Play",
+    -foreground       => '#26a69a',
+    -activeforeground => '#26a69a',
+    -state            => 'disabled',
+    -command          => sub {
+        return unless $chart_engine;
+        
+        # Si ya está reproduciendo, detener
+        if ($replay_playback_active) {
+            $chart_engine->replay_stop_playback();
+        } else {
+            $chart_engine->replay_play();
+        }
+    },
+);
+
+# --- Comando STOP (detener reproducción) ---
+$stop_index = $replay_menu->index('end') + 1;
+
+$replay_menu->command(
+    -label            => "    o Stop",
+    -foreground       => '#F23645',
+    -activeforeground => '#F23645',
+    -state            => 'disabled',
+    -command          => sub {
+        $chart_engine->replay_stop_playback() if $chart_engine;
+    },
+);
+
+$replay_menu->separator;
+
+# --- Comando para control de velocidad (abre diálogo con slider) ---
+$speed_index = $replay_menu->index('end') + 1;
+
+my $speed_dialog;
+
+$replay_menu->command(
+    -label            => "    Velocidad: 1.0x...",
+    -foreground       => '#2962ff',
+    -activeforeground => '#2962ff',
+    -command          => sub {
+        return unless $chart_engine;
+        
+        # Si el diálogo ya está abierto, sólo lo traemos al frente.
+        if ($speed_dialog && Tk::Exists($speed_dialog)) {
+            $speed_dialog->deiconify;
+            $speed_dialog->raise;
+            return;
+        }
+        
+        $speed_dialog = $mw->Toplevel(-bg => '#fbfcf8');
+        $speed_dialog->title("Velocidad de Reproduccion");
+        $speed_dialog->geometry('320x110');
+        $speed_dialog->resizable(0, 0);
+        
+        $speed_dialog->Label(
+            -text => "Velocidad (velas por segundo)",
+            -bg   => '#fbfcf8',
+            -fg   => '#131722',
+        )->pack(-side => 'top', -pady => [6, 2]);
+        
+        my $speed_value_label = $speed_dialog->Label(
+            -text => sprintf("%.1fx", $replay_speed_var),
+            -bg   => '#fbfcf8',
+            -fg   => '#2962ff',
+            -font => 'Arial 10 bold',
+        )->pack(-side => 'top', -pady => 2);
+        
+        $speed_dialog->Scale(
+            -orient      => 'horizontal',
+            -from        => 0.2,
+            -to          => 5.0,
+            -resolution  => 0.1,
+            -tickinterval=> 0,
+            -length      => 280,
+            -bg          => '#fbfcf8',
+            -fg          => '#2962ff',
+            -activebackground => '#75bbfd',
+            -variable    => \$replay_speed_var,
+            -command     => sub {
+                my ($val) = @_;
+                $speed_value_label->configure(-text => sprintf("%.1fx", $val));
+                $chart_engine->set_replay_speed($val) if $chart_engine;
+                
+                # Actualizar la etiqueta del menú usando el índice guardado
+                $replay_menu->entryconfigure(
+                    $speed_index,
+                    -label => sprintf("    Velocidad: %.1fx", $val)
+                );
+            },
+        )->pack(-side => 'top', -padx => 15, -fill => 'x');
+        
+        $speed_dialog->protocol('WM_DELETE_WINDOW', sub {
+            $speed_dialog->withdraw;
+        });
+    },
+);
+
+$replay_menu->separator;
+
+# --- Comando EXIT (salir del modo replay) ---
+$exit_index = $replay_menu->index('end') + 1;
+
+$replay_menu->command(
+    -label            => "    Exit Replay",
+    -foreground       => '#787b86',
+    -activeforeground => '#787b86',
     -state            => 'disabled',
     -command          => sub {
         $chart_engine->exit_replay() if $chart_engine;
-    }
-)->pack(-side => 'left', -padx => 5);
+    },
+);
+
+# Etiqueta de estado para guiar al usuario mientras selecciona la vela de
+# inicio del Replay (queda vacía el resto del tiempo)
+$replay_status_label = $control_panel->Label(
+    -text => "", -bg => '#fbfcf8', -fg => '#F23645', -font => 'Arial 9 bold'
+)->pack(-side => 'left', -padx => 10);
+
+#--Fin SECCION REPLAY --
 
 # Etiqueta de estado para guiar al usuario mientras selecciona la vela de
 # ancla del VWAP (queda vacía el resto del tiempo)
@@ -988,29 +1120,84 @@ $chart_engine->{on_volume_profile_anchor_set} = sub {
     $vwap_status_label->configure(-text => "") if $vwap_status_label;
 };
 
-# --- Callbacks del Modo Replay: sincronizan el estado de los botones
-# (REPLAY / << / >> / EXIT) y el mensaje de estado con lo que hace el motor.
+# Actualizar la sección de callbacks del Modo Replay (alrededor de la línea donde se definen los callbacks)
+
+# --- Callbacks del Modo Replay: sincronizan el estado del menú
+# (REPLAY / navegación / PLAY / STOP / EXIT) y el mensaje de estado.
+# --- Callbacks del Modo Replay ---
+# --- Callbacks del Modo Replay ---
 $chart_engine->{on_replay_selection_cancelled} = sub {
-    $vwap_status_label->configure(-text => "") if $vwap_status_label;
+    $replay_status_label->configure(-text => "") if $replay_status_label;
 };
 
 $chart_engine->{on_replay_started} = sub {
-    $vwap_status_label->configure(-text => "") if $vwap_status_label;
-    $replay_btn->configure(-fg => '#787b86', -text => "REPLAY \x{25CF}") if $replay_btn;
-    $replay_backward5_btn->configure(-state => 'normal') if $replay_backward5_btn;
-    $replay_backward_btn->configure(-state => 'normal') if $replay_backward_btn;
-    $replay_forward_btn->configure(-state => 'normal')  if $replay_forward_btn;
-    $replay_forward5_btn->configure(-state => 'normal') if $replay_forward5_btn;
-    $replay_exit_btn->configure(-state => 'normal', -fg => '#F23645') if $replay_exit_btn;
+    $replay_status_label->configure(-text => "") if $replay_status_label;
+    
+    # Cambiar texto del botón principal para indicar que está activo
+    $replay_menu_btn->configure(-fg => '#787b86', -text => "REPLAY \x{25CF}");
+    
+    # Habilitar todos los comandos del menú usando índices
+    $nav_submenu->entryconfigure(0, -state => 'normal');  # Retroceder 5
+    $nav_submenu->entryconfigure(1, -state => 'normal');  # Retroceder
+    $nav_submenu->entryconfigure(2, -state => 'normal');  # Avanzar
+    $nav_submenu->entryconfigure(3, -state => 'normal');  # Avanzar 5
+    
+    $replay_menu->entryconfigure($play_index, -state => 'normal');
+    $replay_menu->entryconfigure($stop_index, -state => 'normal');
+    $replay_menu->entryconfigure($exit_index, -state => 'normal', -foreground => '#F23645');
+};
+
+$chart_engine->{on_replay_playback_started} = sub {
+    $replay_playback_active = 1;
+    $replay_menu->entryconfigure($play_index, 
+        -label => "    ⏸ Pause", 
+        -foreground => '#787b86',
+        -state => 'normal'
+    );
+    $replay_menu->entryconfigure($stop_index, 
+        -foreground => '#F23645', 
+        -state => 'normal'
+    );
+};
+
+$chart_engine->{on_replay_playback_stopped} = sub {
+    $replay_playback_active = 0;
+    $replay_menu->entryconfigure($play_index, 
+        -label => "    ▶ Play", 
+        -foreground => '#26a69a',
+        -state => 'normal'
+    );
+    $replay_menu->entryconfigure($stop_index, 
+        -foreground => '#787b86', 
+        -state => 'normal'
+    );
 };
 
 $chart_engine->{on_replay_exited} = sub {
-    $replay_btn->configure(-fg => '#F23645', -text => "REPLAY") if $replay_btn;
-    $replay_backward5_btn->configure(-state => 'disabled') if $replay_backward5_btn;
-    $replay_backward_btn->configure(-state => 'disabled') if $replay_backward_btn;
-    $replay_forward_btn->configure(-state => 'disabled')  if $replay_forward_btn;
-    $replay_forward5_btn->configure(-state => 'disabled') if $replay_forward5_btn;
-    $replay_exit_btn->configure(-state => 'disabled', -fg => '#787b86') if $replay_exit_btn;
+    $replay_playback_active = 0;
+    $replay_menu_btn->configure(-fg => '#F23645', -text => "REPLAY");
+    
+    # Deshabilitar todos los comandos del menú usando índices
+    $nav_submenu->entryconfigure(0, -state => 'disabled');
+    $nav_submenu->entryconfigure(1, -state => 'disabled');
+    $nav_submenu->entryconfigure(2, -state => 'disabled');
+    $nav_submenu->entryconfigure(3, -state => 'disabled');
+    
+    $replay_menu->entryconfigure($play_index, 
+        -state => 'disabled', 
+        -label => "    ▶ Play", 
+        -foreground => '#26a69a'
+    );
+    $replay_menu->entryconfigure($stop_index, 
+        -state => 'disabled', 
+        -foreground => '#787b86'
+    );
+    $replay_menu->entryconfigure($exit_index, 
+        -state => 'disabled', 
+        -foreground => '#787b86'
+    );
+    
+    $replay_status_label->configure(-text => "") if $replay_status_label;
 };
 
 

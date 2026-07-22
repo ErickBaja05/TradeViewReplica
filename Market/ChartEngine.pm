@@ -88,6 +88,9 @@ sub new {
         # sobre la vela que marcará el punto de partida del Replay.
         replay_mode            => 0,
         replay_selection_mode  => 0,
+        replay_playback_active => 0,      # 1 cuando está reproduciendo automáticamente
+        replay_playback_after_id => undef, # ID del after() para cancelar programación
+        replay_speed => 1.0,              # Velocidad en velas/segundo (0.2 a 5.0)
 
         # Estado de Escalas ATR (Volatilidad)
         atr_auto_scale    => 1,
@@ -1351,16 +1354,123 @@ sub replay_backward {
     $self->request_render();
 }
 
+=head2 set_replay_speed($speed)
+
+Configura la velocidad de reproducción automática del Modo Replay.
+El rango va de 0.2 (1 vela cada 5 segundos) a 5.0 (5 velas por segundo).
+El valor por defecto es 1.0 (1 vela por segundo).
+
+=cut
+
+sub set_replay_speed {
+    my ($self, $speed) = @_;
+    return unless defined $speed;
+
+    $speed = 0.2 if $speed < 0.2;
+    $speed = 5.0 if $speed > 5.0;
+
+    $self->{replay_speed} = $speed;
+}
+
+=head2 replay_play()
+
+Inicia la reproducción automática del Modo Replay: avanza una vela cada
+cierto intervalo de tiempo determinado por C<replay_speed>.
+No hace nada si el Replay no está activo.
+
+=cut
+
+sub replay_play {
+    my ($self) = @_;
+    return unless $self->{replay_mode};
+
+    # Si ya está reproduciendo, detener primero
+    $self->replay_stop_playback() if $self->{replay_playback_active};
+
+    $self->{replay_playback_active} = 1;
+
+    $self->{on_replay_playback_started}->()
+        if ref($self->{on_replay_playback_started}) eq 'CODE';
+
+    $self->_replay_playback_loop();
+}
+
+=head2 _replay_playback_loop()
+
+Bucle interno de reproducción automática. Se programa a sí misma usando
+C<after> para avanzar una vela a la velocidad configurada. Se detiene
+cuando se alcanza el final del historial o cuando el usuario pulsa stop.
+
+=cut
+
+sub _replay_playback_loop {
+    my ($self) = @_;
+    return unless $self->{replay_playback_active};
+    return unless $self->{replay_mode};
+
+    my $market_data = $self->{market_data};
+    return unless $market_data;
+
+    # Avanzar una vela
+    my $moved = $market_data->replay_forward(1);
+
+    if ($moved) {
+        $self->{offset} = 0;
+        $self->request_render();
+
+        # Programar el siguiente avance según la velocidad
+        my $delay_ms = int(1000 / $self->{replay_speed});
+        $delay_ms = 200 if $delay_ms < 200;   # Máximo 5 velas/segundo
+        $delay_ms = 5000 if $delay_ms > 5000; # Mínimo 1 vela cada 5 segundos
+
+        $self->{replay_playback_after_id} = $self->{widgets}->{main_window}->after(
+            $delay_ms,
+            sub { $self->_replay_playback_loop() if $self->{replay_playback_active} }
+        );
+    }
+    else {
+        # Llegamos al final del historial, detener reproducción automática
+        $self->replay_stop_playback();
+    }
+}
+
+=head2 replay_stop_playback()
+
+Detiene la reproducción automática del Modo Replay. No sale del modo
+Replay, sólo detiene el avance automático.
+
+=cut
+
+sub replay_stop_playback {
+    my ($self) = @_;
+
+    if ($self->{replay_playback_after_id}) {
+        if (my $mw = $self->{widgets}->{main_window}) {
+            $mw->afterCancel($self->{replay_playback_after_id});
+        }
+        $self->{replay_playback_after_id} = undef;
+    }
+
+    $self->{replay_playback_active} = 0;
+
+    $self->{on_replay_playback_stopped}->()
+        if ref($self->{on_replay_playback_stopped}) eq 'CODE';
+}
+
 =head2 exit_replay()
 
 Botón "EXIT": abandona el Modo Replay y restaura la visibilidad de todo
-el historial cargado.
+el historial cargado. También detiene cualquier reproducción automática
+activa.
 
 =cut
 
 sub exit_replay {
     my ($self) = @_;
     return unless $self->{replay_mode} || $self->{replay_selection_mode};
+
+    # Detener reproducción automática si está activa
+    $self->replay_stop_playback() if $self->{replay_playback_active};
 
     my $market_data = $self->{market_data};
     $market_data->replay_stop() if $market_data;
