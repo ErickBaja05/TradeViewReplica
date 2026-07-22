@@ -757,4 +757,23 @@ sub _replay_index {
    return $result;
 }
 
+# En Market/MarketData.pm - Añadir este método
+
+=head2 get_replay_index()
+
+Devuelve el índice actual del Modo Replay (la última vela visible/aceptada).
+Si el Replay no está activo, devuelve el último índice del histórico.
+
+=cut
+
+sub get_replay_index {
+    my ($self) = @_;
+    
+    if ($self->{replay_active}) {
+        return $self->{replay_end_index};
+    }
+    
+    return $self->last_index();
+}
+
 1;

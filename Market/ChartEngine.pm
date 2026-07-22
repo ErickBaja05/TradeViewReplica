@@ -1291,6 +1291,9 @@ sub start_replay {
     my ($self, $index) = @_;
     return unless defined $index;
 
+    # Detener cualquier reproducción automática activa
+    $self->replay_stop_playback() if $self->{replay_playback_active};
+
     my $market_data = $self->{market_data};
     $self->cancel_replay_selection();
     return unless $market_data;
@@ -1300,8 +1303,8 @@ sub start_replay {
 
     $self->{replay_mode} = 1;
 
-    # La vela elegida (nuevo "presente") queda pegada al borde derecho.
-    $self->{offset} = 0;
+    # --- CENTRAR LA VELA SELECCIONADA ---
+    $self->_center_view_on_index($index);
 
     $self->{on_replay_started}->()
         if ref($self->{on_replay_started}) eq 'CODE';
@@ -1318,6 +1321,14 @@ vela disponible, avanza hasta ahí sin fallar.
 
 =cut
 
+=head2 replay_forward($steps)
+
+Botones ">>" / ">>>>": avanza C<$steps> velas (por defecto 1) el
+límite del Modo Replay (revela las siguientes velas del historial).
+Mantiene la vela actual centrada en el gráfico.
+
+=cut
+
 sub replay_forward {
     my ($self, $steps) = @_;
     return unless $self->{replay_mode};
@@ -1328,7 +1339,13 @@ sub replay_forward {
     my $moved = $market_data->replay_forward($steps);
     return unless $moved;
 
-    $self->{offset} = 0;
+    # --- MANTENER LA VELA ACTUAL CENTRADA ---
+    # Obtener el índice actual (límite del replay)
+    my $current_index = $market_data->get_replay_index();
+    return unless defined $current_index;
+    
+    $self->_center_view_on_index($current_index);
+
     $self->request_render();
 }
 
@@ -1337,6 +1354,14 @@ sub replay_forward {
 Botones "<<" / "<<<<": retrocede C<$steps> velas (por defecto 1) el
 límite del Modo Replay (retira las últimas velas visibles). No hace nada
 si el Replay no está activo; nunca deja menos de una vela visible.
+
+=cut
+
+=head2 replay_backward($steps)
+
+Botones "<<" / "<<<<": retrocede C<$steps> velas (por defecto 1) el
+límite del Modo Replay (retira las últimas velas visibles).
+Mantiene la vela actual centrada en el gráfico.
 
 =cut
 
@@ -1350,7 +1375,12 @@ sub replay_backward {
     my $moved = $market_data->replay_backward($steps);
     return unless $moved;
 
-    $self->{offset} = 0;
+    # --- MANTENER LA VELA ACTUAL CENTRADA ---
+    my $current_index = $market_data->get_replay_index();
+    return unless defined $current_index;
+    
+    $self->_center_view_on_index($current_index);
+
     $self->request_render();
 }
 
@@ -1370,6 +1400,37 @@ sub set_replay_speed {
     $speed = 5.0 if $speed > 5.0;
 
     $self->{replay_speed} = $speed;
+}
+
+=head2 _center_view_on_index($index)
+
+Método privado que centra la vista del gráfico en el índice especificado.
+Calcula el offset necesario para que la vela en $index quede en el centro
+de la pantalla.
+
+=cut
+
+sub _center_view_on_index {
+    my ($self, $index) = @_;
+    return unless defined $index;
+
+    my $market_data = $self->{market_data};
+    return unless $market_data;
+
+    my $total_candles = $market_data->size() || 0;
+    my $visible_bars = $self->{visible_bars} || 100;
+    my $center_offset = int($visible_bars / 2);
+    
+    # Calcular el offset para centrar $index
+    my $nuevo_offset = $total_candles - 1 - $index - $center_offset;
+    
+    # Asegurar que el offset esté dentro de los límites válidos
+    my $offset_min = -($visible_bars - 2);
+    my $offset_max = $total_candles - 2;
+    $nuevo_offset = $offset_min if $nuevo_offset < $offset_min;
+    $nuevo_offset = $offset_max if $nuevo_offset > $offset_max;
+    
+    $self->{offset} = $nuevo_offset;
 }
 
 =head2 replay_play()
@@ -1415,7 +1476,10 @@ sub _replay_playback_loop {
     my $moved = $market_data->replay_forward(1);
 
     if ($moved) {
-        $self->{offset} = 0;
+        # --- CENTRAR LA NUEVA VELA ---
+        my $current_index = $market_data->get_replay_index();
+        $self->_center_view_on_index($current_index) if defined $current_index;
+        
         $self->request_render();
 
         # Programar el siguiente avance según la velocidad
