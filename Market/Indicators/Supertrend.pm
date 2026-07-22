@@ -26,6 +26,24 @@ Donde src = hl2 por defecto (fielmente configurable).
   multiplier  => multiplicador del ATR (def: 3.0)
   change_atr  => 1 = usa ta.atr (Wilder), 0 = usa SMA(TR) (def: 1)
 
+=head1 CONTRATO
+
+Sigue el mismo contrato incremental que Market::Indicators::FVG,
+Liquidity, OrderBlocks, SMC_Structures y Structure:
+
+  new()                                   -> instancia
+  reset()                                 -> limpia el estado interno
+  update_last($candles, $atr_values, $i)  -> procesa SÓLO la vela $i
+                                              (incremental, O(1) por vela)
+  get_values()                            -> devuelve la serie completa
+
+El parámetro $atr_values (ATR genérico del gráfico) no se usa aquí: el
+SuperTrend calcula su propio ATR interno (Wilder o SMA(TR), según
+'change_atr') con su propio período configurable, fiel al PineScript
+original. Se recibe igualmente para mantener la firma uniforme con el
+resto de indicadores y permitir que ChartEngine los invoque desde el
+mismo bucle incremental.
+
 =cut
 
 sub new {
@@ -36,6 +54,15 @@ sub new {
         multiplier => $args{multiplier} // 3.0,
         change_atr => $args{change_atr} // 1,
         values     => [],   # serie completa: [{ up, dn, trend, line, buy_signal, sell_signal }, ...]
+
+        # --- Estado incremental ---
+        tr_history  => [],      # ventana de TR (tamaño <= period), para SMA(TR)
+        atr_wilder  => undef,   # ATR Wilder (RMA) corriendo
+        bar_count   => 0,       # nº de velas procesadas (para el "seed" del RMA)
+        prev_up     => undef,
+        prev_dn     => undef,
+        prev_close  => undef,
+        prev_trend  => undef,
     };
 
     return bless $self, $class;
@@ -43,7 +70,14 @@ sub new {
 
 sub reset {
     my ($self) = @_;
-    $self->{values} = [];
+    $self->{values}     = [];
+    $self->{tr_history} = [];
+    $self->{atr_wilder} = undef;
+    $self->{bar_count}  = 0;
+    $self->{prev_up}    = undef;
+    $self->{prev_dn}    = undef;
+    $self->{prev_close} = undef;
+    $self->{prev_trend} = undef;
 }
 
 sub get_values {
@@ -68,12 +102,15 @@ sub _true_range {
     return $tr;
 }
 
-=head2 calculate_until($candles, $until_index)
+=head2 update_last($candles, $atr_values, $i)
 
-Recalcula la serie completa de SuperTrend desde cero hasta $until_index
-(inclusive). $candles es un arrayref de velas {open,high,low,close}.
+Procesa incrementalmente la vela $i (debe llamarse en orden estrictamente
+creciente desde 0, igual que el resto de indicadores incrementales; tras
+un C<reset()> el primer índice válido es 0). Actualiza $self->{values}
+(alineado 1:1 con el índice de vela, values->[$i] == resultado de la
+vela $i) y devuelve C<{ values => [...] }>.
 
-Devuelve un hashref { values => [...] } donde cada elemento contiene:
+Cada elemento de la serie contiene:
   up          => línea "up" del período (banda inferior candidata)
   dn          => línea "dn" del período (banda superior candidata)
   trend       => 1 (alcista) | -1 (bajista)
@@ -83,96 +120,86 @@ Devuelve un hashref { values => [...] } donde cada elemento contiene:
 
 =cut
 
-sub calculate_until {
-    my ($self, $candles, $until_index) = @_;
+sub update_last {
+    my ($self, $candles, $atr_values, $i) = @_;
 
-    $self->reset();
-    return { values => $self->{values} }
-        if !defined $until_index || $until_index < 0 || !$candles;
+    return { values => $self->{values} } if !defined $i || $i < 0 || !$candles;
+
+    my $c = $candles->[$i];
+    return { values => $self->{values} } unless $c;
 
     my $period     = $self->{period};
     my $mult       = $self->{multiplier};
     my $change_atr = $self->{change_atr};
 
-    # --- Serie de ATR (Wilder, ta.atr) y de SMA(TR) para 'statr2' ---
-    my (@tr_series, @atr_wilder, @sma_tr);
-    my $tr_sum = 0;
+    # --- TR de la vela actual, ventana deslizante para SMA(TR) ---
+    my $tr = _true_range($candles, $i);
+    push @{$self->{tr_history}}, $tr;
+    shift @{$self->{tr_history}} while scalar(@{$self->{tr_history}}) > $period;
 
-    for my $i (0 .. $until_index) {
-        my $tr = _true_range($candles, $i);
-        push @tr_series, $tr;
-
-        # SMA(TR, period) -- "statr2" en el PineScript
-        my $win_start = $i - $period + 1;
-        $win_start = 0 if $win_start < 0;
+    my $sma_tr;
+    {
+        my $n = scalar @{$self->{tr_history}};
         my $sum = 0;
-        my $n = 0;
-        for my $j ($win_start .. $i) {
-            $sum += $tr_series[$j];
-            $n++;
-        }
-        push @sma_tr, ($n > 0 ? $sum / $n : undef);
-
-        # ATR Wilder (ta.atr): primer valor = SMA de los primeros $period TR,
-        # luego RMA incremental.
-        if ($i < $period - 1) {
-            push @atr_wilder, undef;
-        }
-        elsif ($i == $period - 1) {
-            my $s = 0;
-            $s += $tr_series[$_] for (0 .. $period - 1);
-            push @atr_wilder, $s / $period;
-        }
-        else {
-            my $prev = $atr_wilder[$i - 1];
-            push @atr_wilder, ($prev * ($period - 1) + $tr) / $period;
-        }
+        $sum += $_ for @{$self->{tr_history}};
+        $sma_tr = $n > 0 ? $sum / $n : undef;
     }
 
-    my ($prev_up, $prev_dn, $prev_close, $prev_trend);
-
-    for my $i (0 .. $until_index) {
-        my $c = $candles->[$i];
-        my $src = ($c->{high} + $c->{low}) / 2;   # hl2
-
-        my $atr = $change_atr ? $atr_wilder[$i] : $sma_tr[$i];
-        $atr //= 0;
-
-        my $up = $src - $mult * $atr;
-        if (defined $prev_up) {
-            $up = ($prev_close > $prev_up) ? ($up > $prev_up ? $up : $prev_up) : $up;
-        }
-
-        my $dn = $src + $mult * $atr;
-        if (defined $prev_dn) {
-            $dn = ($prev_close < $prev_dn) ? ($dn < $prev_dn ? $dn : $prev_dn) : $dn;
-        }
-
-        my $trend = $prev_trend // 1;
-        if ($trend == -1 && defined $prev_dn && $c->{close} > $prev_dn) {
-            $trend = 1;
-        }
-        elsif ($trend == 1 && defined $prev_up && $c->{close} < $prev_up) {
-            $trend = -1;
-        }
-
-        my $buy_signal  = (defined $prev_trend && $prev_trend == -1 && $trend == 1) ? 1 : 0;
-        my $sell_signal = (defined $prev_trend && $prev_trend == 1  && $trend == -1) ? 1 : 0;
-
-        push @{$self->{values}}, {
-            up          => $up,
-            dn          => $dn,
-            trend       => $trend,
-            line        => ($trend == 1 ? $up : $dn),
-            buy_signal  => $buy_signal,
-            sell_signal => $sell_signal,
-        };
-
-        $prev_up     = $up;
-        $prev_dn     = $dn;
-        $prev_close  = $c->{close};
-        $prev_trend  = $trend;
+    # --- ATR Wilder (RMA) incremental: seed = SMA de los primeros $period TR ---
+    $self->{bar_count}++;
+    my $atr_wilder;
+    if ($self->{bar_count} < $period) {
+        $atr_wilder = undef;
     }
+    elsif ($self->{bar_count} == $period) {
+        my $sum = 0;
+        $sum += $_ for @{$self->{tr_history}};   # exactamente $period valores
+        $atr_wilder = $sum / $period;
+    }
+    else {
+        $atr_wilder = ($self->{atr_wilder} * ($period - 1) + $tr) / $period;
+    }
+    $self->{atr_wilder} = $atr_wilder if defined $atr_wilder;
+
+    my $atr = $change_atr ? $atr_wilder : $sma_tr;
+    $atr //= 0;
+
+    my $src = ($c->{high} + $c->{low}) / 2;   # hl2
+
+    my $up = $src - $mult * $atr;
+    if (defined $self->{prev_up}) {
+        $up = ($self->{prev_close} > $self->{prev_up}) ? ($up > $self->{prev_up} ? $up : $self->{prev_up}) : $up;
+    }
+
+    my $dn = $src + $mult * $atr;
+    if (defined $self->{prev_dn}) {
+        $dn = ($self->{prev_close} < $self->{prev_dn}) ? ($dn < $self->{prev_dn} ? $dn : $self->{prev_dn}) : $dn;
+    }
+
+    my $trend = $self->{prev_trend} // 1;
+    if ($trend == -1 && defined $self->{prev_dn} && $c->{close} > $self->{prev_dn}) {
+        $trend = 1;
+    }
+    elsif ($trend == 1 && defined $self->{prev_up} && $c->{close} < $self->{prev_up}) {
+        $trend = -1;
+    }
+
+    my $buy_signal  = (defined $self->{prev_trend} && $self->{prev_trend} == -1 && $trend == 1) ? 1 : 0;
+    my $sell_signal = (defined $self->{prev_trend} && $self->{prev_trend} == 1  && $trend == -1) ? 1 : 0;
+
+    $self->{values}->[$i] = {
+        up          => $up,
+        dn          => $dn,
+        trend       => $trend,
+        line        => ($trend == 1 ? $up : $dn),
+        buy_signal  => $buy_signal,
+        sell_signal => $sell_signal,
+    };
+
+    $self->{prev_up}    = $up;
+    $self->{prev_dn}    = $dn;
+    $self->{prev_close} = $c->{close};
+    $self->{prev_trend} = $trend;
 
     return { values => $self->{values} };
 }

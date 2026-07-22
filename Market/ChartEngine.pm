@@ -42,7 +42,9 @@ use Market::Overlays::VWAPAnchored;
 use Market::Overlays::VolumeProfileAnchored;
 use Market::Overlays::Fibonacci;
 use Market::Overlays::Levels;
-use Market::Overlays::Anchors;
+use Market::Overlays::GhostAnchors;
+use Market::Overlays::GhostLines;
+use Market::Overlays::GhostVWAP;
 use Market::Overlays::MultiAnchoredVWAP;
 
 =head1 NOMBRE
@@ -121,12 +123,17 @@ sub new {
         show_fvg          => 0,
         show_orderblocks  => 0,
         show_trendchannel => 0,
-        smc_cache_key     => undef,
+        # Añade esto en el hash $self del sub new:
+        last_processed_index => -1,
+        smc_cache_key        => undef,
 
-        # --- Anchors (sección Volume): pivotes altos/bajos + pivotes
-        #     perdidos ("missed"), réplica parcial de pivots.txt sin las
-        #     líneas de conexión ---
-        show_anchors      => 0,
+        # --- Anchors (sección Volume): motor único (Market::Indicators::Anchors)
+        #     repartido en tres overlays independientes con su propio botón
+        #     en el menú "Anchored Indicators" ---
+        show_ghost_anchors => 0,   # "Ghost Anchors": marcadores de pivotes (regulares + fantasma)
+        show_ghost_lines   => 0,   # "Ghost Lines": zigzag + rastro horizontal ("ghost level")
+        show_ghost_vwap    => 0,   # "Ghost VWAP": VWAP anclado desde el pivote fantasma vivo
+        ghost_vwap_sigma_range => 1,   # cuántas bandas de sigma dibuja Ghost VWAP (1, 2 o 3)
 
         # --- Multi Anchored VWAP: un VWAP Anclado (con bandas) por cada
         #     pivote detectado por el motor de Anchors, en lugar de un único
@@ -159,11 +166,7 @@ sub new {
         volume_profile_cache_key             => undef,
         volume_profile_sigma_range           => 1,   # cuántos rangos de sigma (líneas VAH/VAL) se dibujan (1, 2 o 3)
 
-        liquidity_engine  => Market::Indicators::Liquidity->new(
-            atr_mult       => 4.0,
-            minor_atr_mult => 1.5,
-            confirm_bars   => 3,
-        ),
+        liquidity_engine  => Market::Indicators::Liquidity->new(),
         # Estructura EXTERNA (BOS/CHoCH externos), calculada sobre los
         # pivotes estructurales (tier "structural").
         smc_engine        => Market::Indicators::SMC_Structures->new(
@@ -175,17 +178,8 @@ sub new {
         smc_internal_engine => Market::Indicators::SMC_Structures->new(
             choch_atr_mult => 0.5,
         ),
-        fvg_engine       => Market::Indicators::FVG->new(
-            fvg_history_nbr  => 5,
-            min_gap_atr_mult => 0.0,
-            reduce_mitigated => 0,
-        ),
-        structure_engine  => Market::Indicators::Structure->new(
-            swing_size    => 50,
-            internal_size => 5,
-            eq_len        => 3,
-            eq_threshold  => 0.1,
-        ),
+        fvg_engine       => Market::Indicators::FVG->new(),
+        structure_engine  => Market::Indicators::Structure->new(),
         # Niveles de Fibonacci calculados sobre la altura del último tramo
         # (leg) del ZigZag Externo (smc_engine).
         fibonacci_engine  => Market::Indicators::Fibonacci->new(),
@@ -208,12 +202,7 @@ sub new {
             period     => 100,
             multiplier => 3.0,
         ),
-        orderblocks_engine => Market::Indicators::OrderBlocks->new(
-            swing_length    => 10,
-            history_to_keep => 20,
-            box_width       => 2.5,
-            atr_period      => 50,
-        ),
+        orderblocks_engine => Market::Indicators::OrderBlocks->new(),
         trendchannel_engine => Market::Indicators::TrendChannel->new(
             length    => 100,
             deviation => 2,
@@ -247,7 +236,11 @@ sub new {
         eql_overlay              => Market::Overlays::EQL->new(),
         fibonacci_overlay        => Market::Overlays::Fibonacci->new(),
         levels_overlay           => Market::Overlays::Levels->new(),
-        anchors_overlay          => Market::Overlays::Anchors->new(),
+        ghost_anchors_overlay    => Market::Overlays::GhostAnchors->new(),
+        ghost_lines_overlay      => Market::Overlays::GhostLines->new(),
+        ghost_vwap_overlay       => Market::Overlays::GhostVWAP->new(
+            sigma_range => 1,
+        ),
         multi_vwap_overlay       => Market::Overlays::MultiAnchoredVWAP->new(
             sigma_range => 1,
         ),
@@ -356,7 +349,8 @@ sub render {
      || $self->{show_lq_sweep} || $self->{show_lq_grab} || $self->{show_lq_run}
      || $self->{show_supertrend} || $self->{show_halftrend} || $self->{show_range_filter}
      || $self->{show_orderblocks} || $self->{show_trendchannel}
-     || $self->{show_anchors} || $self->{show_multi_vwap}) {
+     || $self->{show_ghost_anchors} || $self->{show_ghost_lines} || $self->{show_ghost_vwap}
+     || $self->{show_multi_vwap}) {
         $self->update_smc_overlay($self->{market_data}->last_index());
         $self->update_zigzag_internal_overlay() if $self->{show_zigzag_int};
 
@@ -433,8 +427,16 @@ sub render {
             $self->{range_filter_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
                 if $self->{show_range_filter};
 
-            $self->{anchors_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
-                if $self->{show_anchors};
+            # Ghost Lines (zigzag + rastro horizontal) primero, para quedar
+            # por debajo del VWAP fantasma y de los marcadores de pivote.
+            $self->{ghost_lines_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_ghost_lines};
+
+            $self->{ghost_vwap_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_ghost_vwap};
+
+            $self->{ghost_anchors_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_ghost_anchors};
 
             $self->{multi_vwap_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
                 if $self->{show_multi_vwap};
@@ -485,6 +487,13 @@ crosshair), recalculando sólo cuando cambia la temporalidad activa o el
 
 =cut
 
+=head2 update_smc_overlay($until_index)
+
+Calcula de forma incremental los resultados de Liquidez y Estructura SMC. 
+Procesa únicamente las velas nuevas desde la última actualización.
+
+=cut
+
 sub update_smc_overlay {
     my ($self, $until_index) = @_;
     return unless defined $until_index && $until_index >= 0;
@@ -498,115 +507,118 @@ sub update_smc_overlay {
     my $atr_values = $self->{indicator_manager} ? $self->{indicator_manager}->get('ATR') : undef;
     return unless $atr_values;
 
-    my $liq_result = $self->{liquidity_engine}->calculate_until(
-        $market_data->get_slice(0, $until_index),
-        $atr_values,
-        $until_index
-    );
-
-    my $smc_result = $self->{smc_engine}->calculate(
-        $liq_result->{structural_pivots}
-    );
-
     my $candles_full = $market_data->get_slice(0, $until_index);
+    
+    # 1. Determinar desde dónde empezar a procesar
+    my $start_idx = $self->{last_processed_index} + 1;
+    $start_idx = 0 if $start_idx < 0; # Seguridad para el inicio
 
-    my $fvg_result = $self->{fvg_engine}->calculate_until(
-        $candles_full,
-        $atr_values,
-        $until_index
-    );
+# Reseteamos los motores y empezamos de 0 si:
+    #  a) cambiamos de temporalidad, o
+    #  b) el límite de velas disponible RETROCEDIÓ respecto a lo ya
+    #     procesado (típicamente al entrar en Modo Replay sobre un gráfico
+    #     que ya tenía el histórico completo calculado, o al pulsar
+    #     "retroceder" dentro del Replay). Los motores son incrementales y
+    #     sólo saben avanzar: si no se resetean aquí, conservan zonas/
+    #     pivotes/eventos calculados con velas que el Replay debería
+    #     ocultar, y esos overlays obsoletos se siguen dibujando más allá
+    #     del límite visible.
+    my $prev_tf = $self->{last_processed_tf} // '';
+    my $rewound = ($until_index < $self->{last_processed_index});
+    if ($tf ne $prev_tf || $rewound) {
+        $self->{liquidity_engine}->reset();
+        $self->{fvg_engine}->reset();
+        $self->{structure_engine}->reset();
+        $self->{orderblocks_engine}->reset();
+        $self->{smc_engine}->reset();          # <-- Añade esto
+        $self->{smc_internal_engine}->reset(); # <-- Añade esto (si lo usas incremental)
+        $self->{supertrend_engine}->reset();
+        $self->{halftrend_engine}->reset();
+        $self->{range_filter_engine}->reset();
+        $self->{anchors_engine}->reset();
 
-    my $structure_result = $self->{structure_engine}->calculate_until(
-        $candles_full,
-        $atr_values,
-        $until_index
-    );
+        $start_idx = 0;
+        $self->{last_processed_tf} = $tf;
+        $self->{last_processed_index} = -1;
+    }
 
-    my $supertrend_result = $self->{supertrend_engine}->calculate_until(
-        $candles_full,
-        $until_index
-    );
+    # 2. Bucle Incremental: Alimentar velas una a una
+    my ($liq_result, $fvg_result, $structure_result, $orderblocks_result);
+    my ($supertrend_result, $halftrend_result, $range_filter_result);
+    my $anchors_result;
 
-    my $halftrend_result = $self->{halftrend_engine}->calculate_until(
-        $candles_full,
-        $until_index
-    );
+    for my $i ($start_idx .. $until_index) {
+        my $prev_pivots_count = scalar @{$self->{liquidity_engine}->{pivots}};
+        
+        $liq_result         = $self->{liquidity_engine}->update_last($candles_full, $atr_values, $i);
+        $fvg_result         = $self->{fvg_engine}->update_last($candles_full, $atr_values, $i);
+        $structure_result   = $self->{structure_engine}->update_last($candles_full, $atr_values, $i);
+        $orderblocks_result = $self->{orderblocks_engine}->update_last($candles_full, $atr_values, $i);
 
-    my $range_filter_result = $self->{range_filter_engine}->calculate_until(
-        $candles_full,
-        $until_index
-    );
+        # Supertrend, HalfTrend y Range Filter siguen ahora el mismo
+        # contrato incremental que los anteriores.
+        $supertrend_result   = $self->{supertrend_engine}->update_last($candles_full, $atr_values, $i);
+        $halftrend_result    = $self->{halftrend_engine}->update_last($candles_full, $atr_values, $i);
+        $range_filter_result = $self->{range_filter_engine}->update_last($candles_full, $atr_values, $i);
 
-    my $orderblocks_result = $self->{orderblocks_engine}->calculate_until(
-        $candles_full,
-        $until_index
-    );
+        # Anchors ("Ghost Anchors" / "Ghost Lines" / "Ghost VWAP"): mismo
+        # contrato incremental C<update_last($candles, $atr_values, $i)>.
+        $anchors_result = $self->{anchors_engine}->update_last($candles_full, $atr_values, $i);
 
-    my $trendchannel_result = $self->{trendchannel_engine}->calculate_until(
-        $candles_full,
-        $until_index
-    );
+        # Si Liquidity detectó un nuevo pivote estructural, pasarlo a SMC_Structures
+        my $current_pivots = $self->{liquidity_engine}->{pivots};
+        if (scalar @$current_pivots > $prev_pivots_count) {
+            my $new_pivot = $current_pivots->[-1];
+            $self->{smc_engine}->update_last($new_pivot);
+        }
+    }
 
-    my $anchors_result = $self->{anchors_engine}->calculate_until(
-        $candles_full,
-        $until_index
-    );
+    # 3. Guardar el progreso
+    $self->{last_processed_index} = $until_index;
 
-    # Multi Anchored VWAP: un VWAP Anclado por cada pivote de Anchors
-    my $multi_vwap_result = $self->{multi_vwap_engine}->calculate_until(
-        $candles_full,
-        $anchors_result->{markers},
-        $until_index
-    );
+    # Extraer los resultados finales requeridos por los Overlays
+    my $smc_result = {
+        structure => $self->{smc_engine}->{structure},
+        events    => $self->{smc_engine}->{events},
+    };
 
-    # Fibonacci: se calcula sobre la altura del último tramo (leg) del
-    # ZigZag Externo, es decir, entre los dos últimos pivotes de
-    # $smc_result->{structure} (la misma serie que dibuja zigzag_ext_overlay).
-    my $fibonacci_result = $self->{fibonacci_engine}->calculate(
-        $smc_result->{structure}
-    );
+    # (Nota: Fibonacci/Levels siguen calculándose por reconstrucción total,
+    # ya que dependen del array de estructura ya consolidado y no de un
+    # recorrido vela a vela; Supertrend/HalfTrend/RangeFilter ya se
+    # calcularon de forma incremental en el bucle anterior).
+    my $fibonacci_result  = $self->{fibonacci_engine}->calculate($smc_result->{structure});
+    my $levels_result     = $self->{levels_engine}->calculate_until($smc_result->{structure}, $candles_full, $until_index);
+    
+if ($self->{show_multi_vwap}) {
+    my $multi_res = $self->{multi_vwap_engine}->update_last($candles_full, $anchors_result, $until_index);
+    $self->{multi_vwap_overlay}->set_result($multi_res);
+}
 
-    # Levels: Soporte/Resistencia sobre los mismos pivotes estructurales
-    # ($smc_result->{structure}), usando el historial completo de velas
-    # para detectar rupturas por cierre.
-    my $levels_result = $self->{levels_engine}->calculate_until(
-        $smc_result->{structure},
-        $candles_full,
-        $until_index
-    );
-
+    # 4. Actualizar Overlays
     $self->{zigzag_ext_overlay}->set_result($smc_result);
     $self->{swing_overlay}->set_result($liq_result);
     $self->{liquidity_overlay}->set_result($liq_result);
 
     $self->{bos_ext_overlay}->set_result($structure_result);
     $self->{bos_int_overlay}->set_result($structure_result);
-
     $self->{choch_ext_overlay}->set_result($structure_result);
     $self->{choch_int_overlay}->set_result($structure_result);
-
     $self->{eqh_overlay}->set_result($structure_result);
     $self->{eql_overlay}->set_result($structure_result);
 
     $self->{fibonacci_overlay}->set_result($fibonacci_result);
     $self->{levels_overlay}->set_result($levels_result);
-
     $self->{fvg_overlay}->set_result($fvg_result);
-
     $self->{supertrend_overlay}->set_result($supertrend_result);
     $self->{halftrend_overlay}->set_result($halftrend_result);
     $self->{range_filter_overlay}->set_result($range_filter_result);
     $self->{orderblocks_overlay}->set_result($orderblocks_result);
-    $self->{trendchannel_overlay}->set_result($trendchannel_result);
-    $self->{anchors_overlay}->set_result($anchors_result);
-    $self->{multi_vwap_overlay}->set_result($multi_vwap_result);
 
-    # Guardamos el resultado de Structure (eventos BOS/CHoCH) para que los
-    # modos de anclaje 'bos_confirmed'/'choch_confirmed' del VWAP Anclado
-    # puedan consultarlo sin depender de que sus capas visuales (BOS/CHoCH
-    # Externo) estén activas.
+    $self->{ghost_anchors_overlay}->set_result($anchors_result);
+    $self->{ghost_lines_overlay}->set_result($anchors_result);
+    $self->{ghost_vwap_overlay}->set_result($anchors_result);
+
     $self->{structure_result} = $structure_result;
-
     $self->{smc_cache_key} = $cache_key;
 }
 
@@ -638,7 +650,31 @@ sub update_zigzag_internal_overlay {
     return if defined $self->{zigzag_internal_cache_key}
            && $self->{zigzag_internal_cache_key} eq $cache_key;
 
-    my $result = $self->{zigzag_internal_engine}->calculate($mtf_candles);
+    # Igual que en update_smc_overlay: el motor es incremental (mismo
+    # contrato que Liquidity/FVG/Structure/OrderBlocks/SMC_Structures), así
+    # que sólo se resetea y se recalcula desde 0 cuando cambia el MTF
+    # elegido o cuando la cantidad de velas MTF disponibles RETROCEDE
+    # respecto a lo ya procesado (p.ej. al entrar o retroceder en Modo
+    # Replay). En cualquier otro caso simplemente se alimentan las velas
+    # MTF nuevas que hayan aparecido desde el último cálculo.
+    my $prev_mtf = $self->{zigzag_internal_last_mtf} // '';
+    my $rewound  = ($mtf_count < ($self->{zigzag_internal_last_count} // -1));
+
+    if ($mtf ne $prev_mtf || $rewound) {
+        $self->{zigzag_internal_engine}->reset();
+        $self->{zigzag_internal_last_count} = -1;
+        $self->{zigzag_internal_last_mtf}   = $mtf;
+    }
+
+    my $start_idx = ($self->{zigzag_internal_last_count} // -1) + 1;
+    $start_idx = 0 if $start_idx < 0;
+
+    my $result;
+    for my $i ($start_idx .. $mtf_count - 1) {
+        $result = $self->{zigzag_internal_engine}->update_last($mtf_candles, undef, $i);
+    }
+    $result //= { pivots => $self->{zigzag_internal_engine}->get_values() };
+    $self->{zigzag_internal_last_count} = $mtf_count - 1;
 
     # Traducimos cada pivote (calculado en el espacio de índices/tiempo de
     # $mtf) a una vela REAL y visible de la temporalidad activa del gráfico:
@@ -658,10 +694,11 @@ sub update_zigzag_internal_overlay {
         next unless defined $idx;
 
         push @translated, {
-            index => $idx,
-            time  => $p->{time},
-            price => $exact_price,
-            dir   => $p->{dir},
+            index        => $idx,
+            time         => $p->{time},
+            price        => $exact_price,
+            dir          => $p->{dir},
+            consolidated => $p->{consolidated},
         };
     }
 
@@ -977,6 +1014,29 @@ sub set_multi_vwap_sigma_range {
     $self->{multi_vwap_sigma_range} = $n;
     $self->{multi_vwap_overlay}->set_sigma_range($n)
         if $self->{multi_vwap_overlay};
+
+    $self->request_render();
+}
+
+=head2 set_ghost_vwap_sigma_range($n)
+
+Configura cuántas bandas de desviación estándar (1, 2 o 3 sigmas) se
+muestran para "Ghost VWAP". Actualiza la capa visual y redibuja de
+inmediato; no requiere recalcular el indicador, ya que
+Market::Indicators::Anchors siempre calcula las tres bandas.
+
+=cut
+
+sub set_ghost_vwap_sigma_range {
+    my ($self, $n) = @_;
+    return unless defined $n;
+
+    $n = 1 if $n < 1;
+    $n = 3 if $n > 3;
+
+    $self->{ghost_vwap_sigma_range} = $n;
+    $self->{ghost_vwap_overlay}->set_sigma_range($n)
+        if $self->{ghost_vwap_overlay};
 
     $self->request_render();
 }

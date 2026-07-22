@@ -174,8 +174,10 @@ my %vars = (
     show_vwap_anchored => 0,
     show_volume_profile_anchored => 0,
 
-    show_anchors      => 0,
-    show_multi_vwap   => 0,
+    show_ghost_anchors => 0,
+    show_ghost_lines   => 0,
+    show_ghost_vwap    => 0,
+    show_multi_vwap    => 0,
 );
 
 # Estructura agrupada: cada grupo tiene un nombre visible, una "master var"
@@ -617,22 +619,75 @@ $menu2->cascade(
     -foreground => '#2962ff',
 );
 
-# ── Anchors (Pivotes altos/bajos + pivotes perdidos) ────────────────
-# A diferencia del VWAP/Volume Profile Anclados, este es un simple
-# indicador on/off (no requiere seleccionar una vela de ancla con click).
+# ── Anchors: Ghost Anchors / Ghost Lines / Ghost VWAP ───────────────
+# Los tres overlays comparten un único motor de cálculo incremental
+# (Market::Indicators::Anchors), pero cada uno es un simple indicador
+# on/off independiente (no requiere seleccionar una vela de ancla con
+# click, a diferencia del VWAP/Volume Profile Anclados de arriba).
 $menu2->separator;
 
 $menu2->checkbutton(
-    -label            => "    Anchors",
-    -variable         => \$vars{show_anchors},
+    -label            => "    Ghost Anchors",
+    -variable         => \$vars{show_ghost_anchors},
     -foreground       => '#ef5350',
     -activeforeground => '#ef5350',
     -selectcolor      => '#ef5350',
     -command          => sub {
         return unless $chart_engine;
-        $chart_engine->{show_anchors} = $vars{show_anchors};
+        $chart_engine->{show_ghost_anchors} = $vars{show_ghost_anchors};
         $chart_engine->request_render();
     },
+);
+
+$menu2->checkbutton(
+    -label            => "    Ghost Lines",
+    -variable         => \$vars{show_ghost_lines},
+    -foreground       => '#ef5350',
+    -activeforeground => '#ef5350',
+    -selectcolor      => '#ef5350',
+    -command          => sub {
+        return unless $chart_engine;
+        $chart_engine->{show_ghost_lines} = $vars{show_ghost_lines};
+        $chart_engine->request_render();
+    },
+);
+
+$menu2->checkbutton(
+    -label            => "    Ghost VWAP",
+    -variable         => \$vars{show_ghost_vwap},
+    -foreground       => '#ab47bc',
+    -activeforeground => '#ab47bc',
+    -selectcolor      => '#ab47bc',
+    -command          => sub {
+        return unless $chart_engine;
+        $chart_engine->{show_ghost_vwap} = $vars{show_ghost_vwap};
+        $chart_engine->request_render();
+    },
+);
+
+# ── Rango de sigmas del Ghost VWAP (1, 2 o 3) ───────────────────────
+my $ghost_vwap_sigma_seleccionada = 1;
+
+my $ghost_vwap_sigma_submenu = $menu2->Menu(-tearoff => 0);
+
+for my $n (1, 2, 3) {
+    $ghost_vwap_sigma_submenu->radiobutton(
+        -label            => "    $n sigma" . ($n == 1 ? '' : 's'),
+        -variable         => \$ghost_vwap_sigma_seleccionada,
+        -value            => $n,
+        -foreground       => '#ab47bc',
+        -activeforeground => '#ab47bc',
+        -selectcolor      => '#ab47bc',
+        -command          => sub {
+            $chart_engine->set_ghost_vwap_sigma_range($n) if $chart_engine;
+        },
+    );
+}
+
+$menu2->cascade(
+    -label      => "    Rango de Sigma (Ghost VWAP)",
+    -menu       => $ghost_vwap_sigma_submenu,
+    -foreground => '#ab47bc',
 );
 
 # ── Multi Anchored VWAP ──────────────────────────────────────────────

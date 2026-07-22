@@ -37,6 +37,21 @@ Donde src = close por defecto.
   period      => período de muestreo "Period" (def: 100)
   multiplier  => "Range Multiplier" (def: 3.0)
 
+=head1 CONTRATO
+
+Sigue el mismo contrato incremental que Market::Indicators::FVG,
+Liquidity, OrderBlocks, SMC_Structures y Structure:
+
+  new()                                   -> instancia
+  reset()                                 -> limpia el estado interno
+  update_last($candles, $atr_values, $i)  -> procesa SÓLO la vela $i
+  get_values()                            -> devuelve la serie completa
+
+$atr_values (ATR genérico del gráfico) no se usa: el Range Filter no se
+basa en ATR sino en dos EMA anidadas sobre |close - close[1]|, calculadas
+de forma recursiva e incremental (avrng y smrng), fiel al PineScript
+original.
+
 =cut
 
 sub new {
@@ -46,6 +61,15 @@ sub new {
         period     => $args{period}     // 100,
         multiplier => $args{multiplier} // 3.0,
         values     => [],   # serie completa: [{ filt, hband, lband, upward, downward, trend, buy_signal, sell_signal }, ...]
+
+        # --- Estado incremental ---
+        prev_close     => undef,   # close[1], para |x - x[1]|
+        avrng_prev     => undef,   # EMA(|diff|, period) corriendo
+        smrng_ema_prev => undef,   # EMA(avrng, wper) corriendo
+        prev_filt      => undef,
+        prev_upward    => 0,
+        prev_downward  => 0,
+        prev_trend     => 0,
     };
 
     return bless $self, $class;
@@ -53,7 +77,14 @@ sub new {
 
 sub reset {
     my ($self) = @_;
-    $self->{values} = [];
+    $self->{values}         = [];
+    $self->{prev_close}     = undef;
+    $self->{avrng_prev}     = undef;
+    $self->{smrng_ema_prev} = undef;
+    $self->{prev_filt}      = undef;
+    $self->{prev_upward}    = 0;
+    $self->{prev_downward}  = 0;
+    $self->{prev_trend}     = 0;
 }
 
 sub get_values {
@@ -61,44 +92,13 @@ sub get_values {
     return $self->{values};
 }
 
-# EMA clásica (ta.ema): seed = primer valor de la serie, luego recursiva.
-# Devuelve un arrayref alineado 1:1 con @$series (undef antes del primer
-# valor definido de entrada, ya que math.abs(x - x[1]) no existe en la
-# primera barra).
-sub _ema_series {
-    my ($series, $period) = @_;
+=head2 update_last($candles, $atr_values, $i)
 
-    my $alpha = 2 / ($period + 1);
-    my @out;
-    my $prev;
+Procesa incrementalmente la vela $i (en orden estrictamente creciente
+desde 0 tras un reset()). Actualiza $self->{values} (alineado 1:1 con el
+índice de vela) y devuelve C<{ values => [...] }>.
 
-    for my $i (0 .. $#$series) {
-        my $x = $series->[$i];
-
-        if (!defined $x) {
-            push @out, undef;
-            next;
-        }
-
-        if (!defined $prev) {
-            $prev = $x;
-        }
-        else {
-            $prev = $alpha * $x + (1 - $alpha) * $prev;
-        }
-
-        push @out, $prev;
-    }
-
-    return \@out;
-}
-
-=head2 calculate_until($candles, $until_index)
-
-Recalcula la serie completa de Range Filter desde cero hasta $until_index
-(inclusive). $candles es un arrayref de velas {open,high,low,close}.
-
-Devuelve un hashref { values => [...] } donde cada elemento contiene:
+Cada elemento contiene:
   filt        => valor de la línea Range Filter (rngfilt) en esa barra
   hband       => banda superior (filt + smrng), sólo referencial
   lband       => banda inferior (filt - smrng), sólo referencial
@@ -110,98 +110,96 @@ Devuelve un hashref { values => [...] } donde cada elemento contiene:
 
 =cut
 
-sub calculate_until {
-    my ($self, $candles, $until_index) = @_;
+sub update_last {
+    my ($self, $candles, $atr_values, $i) = @_;
 
-    $self->reset();
-    return { values => $self->{values} }
-        if !defined $until_index || $until_index < 0 || !$candles;
+    return { values => $self->{values} } if !defined $i || $i < 0 || !$candles;
+
+    my $c = $candles->[$i];
+    return { values => $self->{values} } unless $c;
 
     my $period = $self->{period};
     my $mult   = $self->{multiplier};
     my $wper   = $period * 2 - 1;
 
-    # --- src = close, para las barras 0..$until_index ---
-    my @src;
-    for my $i (0 .. $until_index) {
-        push @src, $candles->[$i]->{close};
+    my $x = $c->{close};
+
+    # --- avrng = ta.ema(|x - x[1]|, period), incremental ---
+    my $abs_diff = defined $self->{prev_close} ? abs($x - $self->{prev_close}) : undef;
+
+    my $avrng;
+    if (defined $abs_diff) {
+        my $alpha = 2 / ($period + 1);
+        $avrng = defined $self->{avrng_prev}
+               ? ($alpha * $abs_diff + (1 - $alpha) * $self->{avrng_prev})
+               : $abs_diff;
+        $self->{avrng_prev} = $avrng;
     }
 
-    # --- avrng = ta.ema(|x - x[1]|, period) ---
-    my @abs_diff;
-    for my $i (0 .. $#src) {
-        if ($i == 0) {
-            push @abs_diff, undef;   # x[1] no existe en la primera barra
-        }
-        else {
-            push @abs_diff, abs($src[$i] - $src[$i - 1]);
-        }
+    # --- smrng = ta.ema(avrng, wper) * mult, incremental ---
+    my $smrng;
+    if (defined $avrng) {
+        my $alpha2 = 2 / ($wper + 1);
+        my $smrng_ema = defined $self->{smrng_ema_prev}
+                       ? ($alpha2 * $avrng + (1 - $alpha2) * $self->{smrng_ema_prev})
+                       : $avrng;
+        $self->{smrng_ema_prev} = $smrng_ema;
+        $smrng = $smrng_ema * $mult;
     }
-    my $avrng = _ema_series(\@abs_diff, $period);
 
-    # --- smrng = ta.ema(avrng, wper) * mult ---
-    my $smrng_ema = _ema_series($avrng, $wper);
-    my @smrng = map { defined $_ ? $_ * $mult : undef } @$smrng_ema;
+    my $r = $smrng // 0;
 
     # --- rngfilt recursivo ---
-    my ($prev_filt, $prev_upward, $prev_downward, $prev_trend) = (undef, 0, 0, 0);
-
-    for my $i (0 .. $#src) {
-        my $x = $src[$i];
-        my $r = $smrng[$i] // 0;
-
-        my $filt;
-        if (!defined $prev_filt) {
-            $filt = $x;
-        }
-        elsif ($x > $prev_filt) {
-            $filt = ($x - $r < $prev_filt) ? $prev_filt : $x - $r;
-        }
-        else {
-            $filt = ($x + $r > $prev_filt) ? $prev_filt : $x + $r;
-        }
-
-        my $upward;
-        my $downward;
-
-        if (!defined $prev_filt) {
-            $upward   = 0;
-            $downward = 0;
-        }
-        elsif ($filt > $prev_filt) {
-            $upward   = $prev_upward + 1;
-            $downward = 0;
-        }
-        elsif ($filt < $prev_filt) {
-            $upward   = 0;
-            $downward = $prev_downward + 1;
-        }
-        else {
-            $upward   = $prev_upward;
-            $downward = $prev_downward;
-        }
-
-        my $trend = $upward > 0 ? 1 : $downward > 0 ? -1 : 0;
-
-        my $buy_signal  = (defined $prev_trend && $prev_trend != 1  && $trend == 1)  ? 1 : 0;
-        my $sell_signal = (defined $prev_trend && $prev_trend != -1 && $trend == -1) ? 1 : 0;
-
-        push @{$self->{values}}, {
-            filt        => $filt,
-            hband       => $filt + $r,
-            lband       => $filt - $r,
-            upward      => $upward,
-            downward    => $downward,
-            trend       => $trend,
-            buy_signal  => $buy_signal,
-            sell_signal => $sell_signal,
-        };
-
-        $prev_filt     = $filt;
-        $prev_upward   = $upward;
-        $prev_downward = $downward;
-        $prev_trend    = $trend;
+    my $filt;
+    if (!defined $self->{prev_filt}) {
+        $filt = $x;
     }
+    elsif ($x > $self->{prev_filt}) {
+        $filt = ($x - $r < $self->{prev_filt}) ? $self->{prev_filt} : $x - $r;
+    }
+    else {
+        $filt = ($x + $r > $self->{prev_filt}) ? $self->{prev_filt} : $x + $r;
+    }
+
+    my ($upward, $downward);
+    if (!defined $self->{prev_filt}) {
+        $upward   = 0;
+        $downward = 0;
+    }
+    elsif ($filt > $self->{prev_filt}) {
+        $upward   = $self->{prev_upward} + 1;
+        $downward = 0;
+    }
+    elsif ($filt < $self->{prev_filt}) {
+        $upward   = 0;
+        $downward = $self->{prev_downward} + 1;
+    }
+    else {
+        $upward   = $self->{prev_upward};
+        $downward = $self->{prev_downward};
+    }
+
+    my $trend = $upward > 0 ? 1 : $downward > 0 ? -1 : 0;
+
+    my $buy_signal  = (defined $self->{prev_trend} && $self->{prev_trend} != 1  && $trend == 1)  ? 1 : 0;
+    my $sell_signal = (defined $self->{prev_trend} && $self->{prev_trend} != -1 && $trend == -1) ? 1 : 0;
+
+    $self->{values}->[$i] = {
+        filt        => $filt,
+        hband       => $filt + $r,
+        lband       => $filt - $r,
+        upward      => $upward,
+        downward    => $downward,
+        trend       => $trend,
+        buy_signal  => $buy_signal,
+        sell_signal => $sell_signal,
+    };
+
+    $self->{prev_close}    = $x;
+    $self->{prev_filt}     = $filt;
+    $self->{prev_upward}   = $upward;
+    $self->{prev_downward} = $downward;
+    $self->{prev_trend}    = $trend;
 
     return { values => $self->{values} };
 }

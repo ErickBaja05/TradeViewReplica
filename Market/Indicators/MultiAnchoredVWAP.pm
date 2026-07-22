@@ -7,22 +7,19 @@ use Market::Indicators::VWAPAnchored;
 
 =head1 NOMBRE
 
-Market::Indicators::MultiAnchoredVWAP - Motor de cálculo de "Multi Anchored
-VWAP": dibuja un VWAP Anclado (con bandas de desviación estándar) desde
-CADA pivote detectado por Market::Indicators::Anchors (pivotes altos y
-bajos, incluyendo los "perdidos"/missed), en lugar de un único ancla
-elegida manualmente con click.
+Market::Indicators::MultiAnchoredVWAP - Motor de cálculo de "Multi Anchored VWAP".
 
-Reutiliza internamente Market::Indicators::VWAPAnchored (misma fórmula:
-src = hlc3, vwap = cumsum(src*vol)/cumsum(vol), bandas = vwap ± N*stdev)
-para cada uno de los pivotes.
+Dibuja un VWAP Anclado (con bandas de desviación estándar) desde CADA pivote
+detectado por L<Market::Indicators::Anchors> (pivotes regulares ▼/▲ y pivotes
+"missed"/fantasma 👻), en lugar de una única ancla elegida manualmente.
+
+Reutiliza internamente L<Market::Indicators::VWAPAnchored> para cada uno de los pivotes.
 
 =head1 PARÁMETROS
 
   std_mult   => multiplicador base de la desviación estándar (def: 1).
   max_anchors=> cantidad máxima de anclas (pivotes) más recientes a
-                calcular, para evitar recalcular decenas de VWAPs
-                superpuestos en historiales largos (def: 20).
+                calcular (def: 20).
 
 =cut
 
@@ -48,17 +45,28 @@ sub get_series {
     return $self->{series};
 }
 
+=head2 update_last($candles, $anchors, $until_index)
+
+Alias e interfaz compatible con el contrato incremental del motor gráfico[cite: 4].
+Invoca a C<calculate_until>.
+
+=cut
+
+sub update_last {
+    my ($self, $candles, $anchors, $until_index) = @_;
+    return $self->calculate_until($candles, $anchors, $until_index);
+}
+
 =head2 calculate_until($candles, $anchors, $until_index)
 
-$candles es el arrayref completo de velas. $anchors es el arrayref de
-marcadores devuelto por Market::Indicators::Anchors::calculate_until()
-(clave C<markers>: { index, price, type }).
+C<$candles> es el arrayref completo de velas[cite: 7]. 
+C<$anchors> puede ser el hashref de resultado completo devuelto por C<Anchors.pm>
+(clave C<markers>: C<[{ index, price, type }, ...]>)[cite: 4, 7] o el arrayref directo de pivotes[cite: 7].
 
-Calcula, para cada uno de los C<max_anchors> pivotes más recientes (con
-index <= $until_index), una serie de VWAP Anclado independiente desde ese
-pivote hasta $until_index.
+Calcula, para cada uno de los C<max_anchors> pivotes más recientes de C<Anchors.pm>,
+una serie de VWAP Anclado independiente desde ese pivote hasta C<$until_index>[cite: 7].
 
-Devuelve un hashref { series => [ { anchor_index, type, values }, ... ] }.
+Devuelve un hashref C<{ series => [ { anchor_index, type, values }, ... ] }>[cite: 7].
 
 =cut
 
@@ -70,17 +78,27 @@ sub calculate_until {
     return { series => $self->{series} }
         unless $candles && $anchors && defined $until_index;
 
-    # Sólo nos interesan los pivotes ya confirmados dentro del rango visible
-    # de cálculo, ordenados de más antiguo a más reciente, y limitados a los
-    # últimos $max_anchors para no acumular decenas de VWAPs superpuestos.
-    my @valid = grep { defined $_->{index} && $_->{index} <= $until_index } @$anchors;
+    # Extrae los pivotes tanto si se pasa el resultado completo de Anchors.pm
+    # ($anchors_result) como si se pasa directamente la lista de marcadores
+    my $markers = (ref($anchors) eq 'HASH' && exists $anchors->{markers})
+        ? $anchors->{markers}
+        : (ref($anchors) eq 'ARRAY' ? $anchors : []);
+
+    return { series => $self->{series} } unless @$markers;
+
+    # Filtrar pivotes válidos cuyo índice no supere $until_index
+    my @valid = grep { defined $_->{index} && $_->{index} <= $until_index } @$markers;
+
+    # Ordenar cronológicamente por índice
     @valid = sort { $a->{index} <=> $b->{index} } @valid;
 
+    # Tomar los últimos $max_anchors pivotes para no saturar el rendimiento
     my $max_anchors = $self->{max_anchors};
     if (@valid > $max_anchors) {
         @valid = @valid[-$max_anchors .. -1];
     }
 
+    # Recorrer cada pivote detectado por Anchors.pm
     for my $pivot (@valid) {
         my $engine = Market::Indicators::VWAPAnchored->new(std_mult => $self->{std_mult});
 
@@ -90,7 +108,7 @@ sub calculate_until {
 
         push @{$self->{series}}, {
             anchor_index => $pivot->{index},
-            type         => $pivot->{type},
+            type         => $pivot->{type}, # reg_high, reg_low, missed_high, missed_low
             values       => $result->{values},
         };
     }

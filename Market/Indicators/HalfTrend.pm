@@ -49,6 +49,23 @@ Lógica original:
   channel_deviation  => multiplicador del canal (def: 2)
   atr_period         => período del ATR base (def: 100, fijo en el original)
 
+=head1 CONTRATO
+
+Sigue el mismo contrato incremental que Market::Indicators::FVG,
+Liquidity, OrderBlocks, SMC_Structures y Structure:
+
+  new()                                   -> instancia
+  reset()                                 -> limpia el estado interno
+  update_last($candles, $atr_values, $i)  -> procesa SÓLO la vela $i
+  get_values()                            -> devuelve la serie completa
+
+$candles debe ser el arrayref COMPLETO de velas (no sólo hasta $i), ya
+que las ventanas de highest/lowest/SMA miran hacia atrás usando índices
+absolutos sobre ese arrayref, igual que en el resto de indicadores
+incrementales. $atr_values (ATR genérico del gráfico) no se usa: el
+HalfTrend calcula su propio ATR Wilder interno de período fijo
+('atr_period'), fiel al PineScript original.
+
 =cut
 
 sub new {
@@ -59,6 +76,19 @@ sub new {
         channel_deviation => $args{channel_deviation} // 2,
         atr_period        => $args{atr_period}        // 100,
         values            => [],
+
+        # --- Estado incremental ---
+        tr_history      => [],      # ventana de TR (tamaño <= atr_period), seed del RMA
+        atr_wilder      => undef,   # ATR Wilder (RMA) corriendo
+        bar_count       => 0,
+
+        trend           => 0,
+        next_trend      => 0,
+        max_low_price   => undef,
+        min_high_price  => undef,
+        up              => undef,
+        down            => undef,
+        prev_trend      => undef,
     };
 
     return bless $self, $class;
@@ -66,7 +96,17 @@ sub new {
 
 sub reset {
     my ($self) = @_;
-    $self->{values} = [];
+    $self->{values}          = [];
+    $self->{tr_history}      = [];
+    $self->{atr_wilder}      = undef;
+    $self->{bar_count}       = 0;
+    $self->{trend}           = 0;
+    $self->{next_trend}      = 0;
+    $self->{max_low_price}   = undef;
+    $self->{min_high_price}  = undef;
+    $self->{up}              = undef;
+    $self->{down}            = undef;
+    $self->{prev_trend}      = undef;
 }
 
 sub get_values {
@@ -121,12 +161,13 @@ sub _sma_window {
     return $n > 0 ? $sum / $n : undef;
 }
 
-=head2 calculate_until($candles, $until_index)
+=head2 update_last($candles, $atr_values, $i)
 
-Recalcula la serie completa de HalfTrend desde cero hasta $until_index
-(inclusive).
+Procesa incrementalmente la vela $i (en orden estrictamente creciente
+desde 0 tras un reset()). Actualiza $self->{values} (alineado 1:1 con el
+índice de vela) y devuelve C<{ values => [...] }>.
 
-Devuelve un hashref { values => [...] } donde cada elemento contiene:
+Cada elemento contiene:
   trend        => 0 (alcista) | 1 (bajista)
   line         => valor de la línea HalfTrend (up si trend==0, down si trend==1)
   atr_high     => banda superior del canal
@@ -136,124 +177,113 @@ Devuelve un hashref { values => [...] } donde cada elemento contiene:
 
 =cut
 
-sub calculate_until {
-    my ($self, $candles, $until_index) = @_;
+sub update_last {
+    my ($self, $candles, $atr_values, $i) = @_;
 
-    $self->reset();
-    return { values => $self->{values} }
-        if !defined $until_index || $until_index < 0 || !$candles;
+    return { values => $self->{values} } if !defined $i || $i < 0 || !$candles;
+
+    my $c = $candles->[$i];
+    return { values => $self->{values} } unless $c;
 
     my $amplitude  = $self->{amplitude};
     my $chan_dev   = $self->{channel_deviation};
     my $atr_period = $self->{atr_period};
 
-    # --- ATR Wilder de período fijo (100 por defecto) para todo el rango ---
-    my (@tr_series, @atr_wilder);
-    for my $i (0 .. $until_index) {
-        my $tr = _true_range($candles, $i);
-        push @tr_series, $tr;
+    # --- ATR Wilder incremental de período fijo (atr_period) ---
+    my $tr = _true_range($candles, $i);
+    push @{$self->{tr_history}}, $tr;
+    shift @{$self->{tr_history}} while scalar(@{$self->{tr_history}}) > $atr_period;
 
-        if ($i < $atr_period - 1) {
-            push @atr_wilder, undef;
+    $self->{bar_count}++;
+    my $atr_wilder;
+    if ($self->{bar_count} < $atr_period) {
+        $atr_wilder = undef;
+    }
+    elsif ($self->{bar_count} == $atr_period) {
+        my $sum = 0;
+        $sum += $_ for @{$self->{tr_history}};
+        $atr_wilder = $sum / $atr_period;
+    }
+    else {
+        $atr_wilder = ($self->{atr_wilder} * ($atr_period - 1) + $tr) / $atr_period;
+    }
+    $self->{atr_wilder} = $atr_wilder if defined $atr_wilder;
+
+    # maxLowPrice/minHighPrice parten de low[0]/high[0] en la primera barra
+    if ($i == 0) {
+        $self->{max_low_price}  = $c->{low};
+        $self->{min_high_price} = $c->{high};
+    }
+
+    my $atr_raw = $self->{atr_wilder} // 0;
+    my $atr2 = $atr_raw / 2;
+    my $dev  = $chan_dev * $atr2;
+
+    my $high_price = _window_extreme($candles, $i, $amplitude, 'high', 1);
+    my $low_price  = _window_extreme($candles, $i, $amplitude, 'low',  0);
+    my $highma     = _sma_window($candles, $i, $amplitude, 'high');
+    my $lowma      = _sma_window($candles, $i, $amplitude, 'low');
+
+    my $prev_low   = ($i > 0) ? $candles->[$i - 1]->{low}   : $c->{low};
+    my $prev_high  = ($i > 0) ? $candles->[$i - 1]->{high}  : $c->{high};
+
+    if ($self->{next_trend} == 1) {
+        $self->{max_low_price} = $low_price if $low_price > $self->{max_low_price};
+
+        if (defined $highma && $highma < $self->{max_low_price} && $c->{close} < $prev_low) {
+            $self->{trend}          = 1;
+            $self->{next_trend}     = 0;
+            $self->{min_high_price} = $high_price;
         }
-        elsif ($i == $atr_period - 1) {
-            my $s = 0;
-            $s += $tr_series[$_] for (0 .. $atr_period - 1);
-            push @atr_wilder, $s / $atr_period;
-        }
-        else {
-            my $prev = $atr_wilder[$i - 1];
-            push @atr_wilder, ($prev * ($atr_period - 1) + $tr) / $atr_period;
+    }
+    else {
+        $self->{min_high_price} = $high_price if $high_price < $self->{min_high_price};
+
+        if (defined $lowma && $lowma > $self->{min_high_price} && $c->{close} > $prev_high) {
+            $self->{trend}          = 0;
+            $self->{next_trend}     = 1;
+            $self->{max_low_price}  = $low_price;
         }
     }
 
-    my $trend         = 0;
-    my $next_trend    = 0;
-    my $max_low_price  = $candles->[0]->{low};
-    my $min_high_price = $candles->[0]->{high};
+    my ($atr_high, $atr_low, $arrow_up, $arrow_down);
+    my $prev_trend = $self->{prev_trend};
 
-    my ($up, $down);
-    my $prev_trend;
-
-    for my $i (0 .. $until_index) {
-        my $c = $candles->[$i];
-
-        # maxLowPrice/minHighPrice parten de low[1]/high[1] (barra anterior)
-        if ($i == 0) {
-            $max_low_price  = $c->{low};
-            $min_high_price = $c->{high};
-        }
-
-        my $atr_raw = $atr_wilder[$i] // 0;
-        my $atr2 = $atr_raw / 2;
-        my $dev  = $chan_dev * $atr2;
-
-        my $high_price = _window_extreme($candles, $i, $amplitude, 'high', 1);
-        my $low_price  = _window_extreme($candles, $i, $amplitude, 'low',  0);
-        my $highma     = _sma_window($candles, $i, $amplitude, 'high');
-        my $lowma      = _sma_window($candles, $i, $amplitude, 'low');
-
-        my $prev_close = ($i > 0) ? $candles->[$i - 1]->{close} : $c->{close};
-        my $prev_low   = ($i > 0) ? $candles->[$i - 1]->{low}   : $c->{low};
-        my $prev_high  = ($i > 0) ? $candles->[$i - 1]->{high}  : $c->{high};
-
-        if ($next_trend == 1) {
-            $max_low_price = $low_price if $low_price > $max_low_price;
-
-            if (defined $highma && $highma < $max_low_price && $c->{close} < $prev_low) {
-                $trend         = 1;
-                $next_trend    = 0;
-                $min_high_price = $high_price;
-            }
+    if ($self->{trend} == 0) {
+        if (defined $prev_trend && $prev_trend != 0) {
+            $self->{up} = defined $self->{down} ? $self->{down} : (defined $self->{up} ? $self->{up} : $c->{low});
+            $arrow_up = $self->{up} - $atr2;
         }
         else {
-            $min_high_price = $high_price if $high_price < $min_high_price;
-
-            if (defined $lowma && $lowma > $min_high_price && $c->{close} > $prev_high) {
-                $trend         = 0;
-                $next_trend    = 1;
-                $max_low_price = $low_price;
-            }
+            $self->{up} = defined $self->{up} ? ($self->{max_low_price} > $self->{up} ? $self->{max_low_price} : $self->{up}) : $self->{max_low_price};
         }
-
-        my ($atr_high, $atr_low, $arrow_up, $arrow_down);
-
-        if ($trend == 0) {
-            if (defined $prev_trend && $prev_trend != 0) {
-                $up = defined $down ? $down : (defined $up ? $up : $c->{low});
-                $arrow_up = $up - $atr2;
-            }
-            else {
-                $up = defined $up ? ($max_low_price > $up ? $max_low_price : $up) : $max_low_price;
-            }
-            $atr_high = $up + $dev;
-            $atr_low  = $up - $dev;
-        }
-        else {
-            if (defined $prev_trend && $prev_trend != 1) {
-                $down = defined $up ? $up : (defined $down ? $down : $c->{high});
-                $arrow_down = $down + $atr2;
-            }
-            else {
-                $down = defined $down ? ($min_high_price < $down ? $min_high_price : $down) : $min_high_price;
-            }
-            $atr_high = $down + $dev;
-            $atr_low  = $down - $dev;
-        }
-
-        my $line = ($trend == 0) ? $up : $down;
-
-        push @{$self->{values}}, {
-            trend      => $trend,
-            line       => $line,
-            atr_high   => $atr_high,
-            atr_low    => $atr_low,
-            arrow_up   => $arrow_up,
-            arrow_down => $arrow_down,
-        };
-
-        $prev_trend = $trend;
+        $atr_high = $self->{up} + $dev;
+        $atr_low  = $self->{up} - $dev;
     }
+    else {
+        if (defined $prev_trend && $prev_trend != 1) {
+            $self->{down} = defined $self->{up} ? $self->{up} : (defined $self->{down} ? $self->{down} : $c->{high});
+            $arrow_down = $self->{down} + $atr2;
+        }
+        else {
+            $self->{down} = defined $self->{down} ? ($self->{min_high_price} < $self->{down} ? $self->{min_high_price} : $self->{down}) : $self->{min_high_price};
+        }
+        $atr_high = $self->{down} + $dev;
+        $atr_low  = $self->{down} - $dev;
+    }
+
+    my $line = ($self->{trend} == 0) ? $self->{up} : $self->{down};
+
+    $self->{values}->[$i] = {
+        trend      => $self->{trend},
+        line       => $line,
+        atr_high   => $atr_high,
+        atr_low    => $atr_low,
+        arrow_up   => $arrow_up,
+        arrow_down => $arrow_down,
+    };
+
+    $self->{prev_trend} = $self->{trend};
 
     return { values => $self->{values} };
 }
