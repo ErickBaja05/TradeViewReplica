@@ -107,7 +107,7 @@ my $tf_label = $control_panel->Label(-text => "Temporalidad:", -bg => '#fbfcf8',
 # más abajo, pero se usa desde callbacks definidos antes en el archivo)
 my $vwap_status_label;
 
-my @temporalidades = ('1m', '5m', '15m', '1h', '2h', '4h', '1d', '1w');
+my @temporalidades = ('1m', '5m', '15m', '30m', '1h', '2h', '4h', '1d', '1w');
 my $tf_seleccionada = '1m';
 
 my $tf_menu = $control_panel->Optionmenu(
@@ -304,7 +304,7 @@ for my $group (@groups) {
     # temporalidad distinta a la que se está graficando en pantalla.
     if ($gname eq 'Internal Structure') {
 
-        my @zz_int_timeframes = ('15m', '1h', '2h', '4h', '1d', '1w');
+        my @zz_int_timeframes = ('15m', '30m', '1h', '2h', '4h', '1d', '1w');
         my $zz_int_tf_seleccionada = '1h';
 
         my $cascade_index;
