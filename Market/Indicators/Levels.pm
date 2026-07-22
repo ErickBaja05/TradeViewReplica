@@ -2,26 +2,19 @@ package Market::Indicators::Levels;
 
 use strict;
 use warnings;
+use POSIX qw(strftime);
+use Time::Piece;
 
 =head1 NOMBRE
 
-Market::Indicators::Levels - Niveles de Soporte y Resistencia calculados
-sobre los pivotes estructurales del ZigZag Externo (la misma serie que usa
-C<Market::Indicators::Fibonacci>, disponible en C<< $smc_result->{structure} >>).
+Market::Indicators::Levels - Motor de cálculo de niveles MTF (Multi Time Frame)
+al estilo SMC Pro.
 
 =head1 DESCRIPCIÓN
 
-Cada pivote de tipo C<HIGH> se traza como un nivel de Resistencia; cada
-pivote C<LOW> como un nivel de Soporte. El nivel se extiende desde la barra
-donde se originó hasta la barra donde el precio lo "rompe" (el cierre de
-una vela posterior cruza el nivel): hacia arriba para una resistencia,
-hacia abajo para un soporte. Si nunca se rompe, permanece vigente hasta la
-última vela disponible (y el overlay lo extiende hasta el borde derecho
-visible).
-
-Parámetros:
-  max_levels => cantidad máxima de niveles a mantener por lado, quedándonos
-                con los más recientes (def: 6)
+Calcula automáticamente el Alto y Bajo del período anterior para todas las
+temporalidades (Día, Semana, Mes) y proyecta estos niveles desde el inicio
+del período actual hasta la última vela.
 
 =cut
 
@@ -29,8 +22,7 @@ sub new {
     my ($class, %args) = @_;
 
     my $self = {
-        max_levels => $args{max_levels} // 6,
-        levels     => [],
+        mtf_levels => [],
     };
 
     return bless $self, $class;
@@ -38,95 +30,115 @@ sub new {
 
 sub reset {
     my ($self) = @_;
-    $self->{levels} = [];
+    $self->{mtf_levels} = [];
 }
 
-=head2 calculate_until($structure, $candles, $until_index)
+=head2 calculate_until($candles, $until_index)
 
-  $structure   => arrayref de pivotes { type => 'HIGH'|'LOW', price, index }
-                  (p.ej. $smc_result->{structure})
-  $candles     => arrayref completo de velas, usado para detectar rupturas
-  $until_index => índice de la última vela disponible
-
-Devuelve C<< { levels => [ { type, price, start_index, end_index, broken }, ... ] } >>
-donde C<type> es C<'RESISTANCE'> o C<'SUPPORT'>.
+Devuelve C<< { mtf_levels => [...] } >> con todos los niveles H/L (D, W, M).
+Cada elemento contiene: type, label, tf, price, start_index, end_index.
 
 =cut
 
 sub calculate_until {
-    my ($self, $structure, $candles, $until_index) = @_;
+    my ($self, $candles, $until_index) = @_;
 
     $self->reset();
-    return { levels => [] }
-        unless $structure && ref($structure) eq 'ARRAY' && @$structure
-        && defined $until_index;
+    return { mtf_levels => [] }
+        unless $candles && ref($candles) eq 'ARRAY' && defined $until_index;
 
-    my (@resistances, @supports);
+    my @out_mtf = ();
 
-    for my $pivot (@$structure) {
-        next unless defined $pivot->{price} && defined $pivot->{index};
+    # Trackers de estado para TODAS las temporalidades simultáneamente.
+    my %st = (
+        D => { key => '', h => -1, l => 9999999, ph => undef, pl => undef, start => 0 },
+        W => { key => '', h => -1, l => 9999999, ph => undef, pl => undef, start => 0 },
+        M => { key => '', h => -1, l => 9999999, ph => undef, pl => undef, start => 0 },
+    );
 
-        if ($pivot->{type} eq 'HIGH') {
-            push @resistances, { price => $pivot->{price}, index => $pivot->{index} };
+    for my $i (0 .. $until_index) {
+my $c = $candles->[$i];
+        next unless $c && $c->{time};
+
+        my ($year, $mon, $mday);
+
+        # Verificamos si la fecha viene en formato ISO o texto con guiones (ej. 2026-07-13...)
+        if ($c->{time} =~ /^(\d{4})-(\d{2})-(\d{2})/) {
+            ($year, $mon, $mday) = ($1, $2, $3);
+        } elsif ($c->{time} =~ /^\d+$/) {
+            # Si por el contrario es un timestamp numérico (epoch)
+            my @g = gmtime($c->{time});
+            ($year, $mon, $mday) = ($g[5] + 1900, sprintf("%02d", $g[4] + 1), sprintf("%02d", $g[3]));
+        } else {
+            next; # Si el formato no es reconocido, saltamos la vela
         }
-        elsif ($pivot->{type} eq 'LOW') {
-            push @supports, { price => $pivot->{price}, index => $pivot->{index} };
+
+        # Construimos las llaves directamente evitando problemas de zona horaria o Time::Piece
+        my $d_key = "$year-$mon-$mday";
+        
+        # Para la semana ISO y mes, podemos apoyarnos en un epoch seguro o cálculo directo
+        # Usando un epoch aproximado o Time::Piece de forma segura solo con la fecha base:
+        my $tp   = Time::Piece->strptime("$year-$mon-$mday", "%Y-%m-%d");
+        my $w_key = $tp->strftime("%G-%V");
+        my $m_key = "$year-$mon";
+
+        # --- Lógica Diaria ---
+        if ($st{D}{key} ne $d_key) {
+            $st{D}{ph} = $st{D}{h} if $st{D}{key}; # Guardar H anterior
+            $st{D}{pl} = $st{D}{l} if $st{D}{key}; # Guardar L anterior
+            $st{D}{key}   = $d_key;
+            $st{D}{h}     = $c->{high};
+            $st{D}{l}     = $c->{low};
+            $st{D}{start} = $i;
+        } else {
+            $st{D}{h} = $c->{high} if $c->{high} > $st{D}{h};
+            $st{D}{l} = $c->{low}  if $c->{low}  < $st{D}{l};
+        }
+
+        # --- Lógica Semanal ---
+        if ($st{W}{key} ne $w_key) {
+            $st{W}{ph} = $st{W}{h} if $st{W}{key};
+            $st{W}{pl} = $st{W}{l} if $st{W}{key};
+            $st{W}{key}   = $w_key;
+            $st{W}{h}     = $c->{high};
+            $st{W}{l}     = $c->{low};
+            $st{W}{start} = $i;
+        } else {
+            $st{W}{h} = $c->{high} if $c->{high} > $st{W}{h};
+            $st{W}{l} = $c->{low}  if $c->{low}  < $st{W}{l};
+        }
+
+        # --- Lógica Mensual ---
+        if ($st{M}{key} ne $m_key) {
+            $st{M}{ph} = $st{M}{h} if $st{M}{key};
+            $st{M}{pl} = $st{M}{l} if $st{M}{key};
+            $st{M}{key}   = $m_key;
+            $st{M}{h}     = $c->{high};
+            $st{M}{l}     = $c->{low};
+            $st{M}{start} = $i;
+        } else {
+            $st{M}{h} = $c->{high} if $c->{high} > $st{M}{h};
+            $st{M}{l} = $c->{low}  if $c->{low}  < $st{M}{l};
         }
     }
 
-    # Nos quedamos sólo con los N más recientes de cada lado.
-    my $max = $self->{max_levels};
-    @resistances = splice(@resistances, -$max) if @resistances > $max;
-    @supports    = splice(@supports, -$max)    if @supports > $max;
-
-    my @out;
-
-    for my $r (@resistances) {
-        my $break_index = _find_break($candles, $r->{index}, $r->{price}, $until_index, 1);
-        push @out, {
-            type        => 'RESISTANCE',
-            price       => $r->{price},
-            start_index => $r->{index},
-            end_index   => defined $break_index ? $break_index : $until_index,
-            broken      => defined $break_index ? 1 : 0,
-        };
+    # Compilar los niveles finales proyectados para D, W y M sin restricciones
+    if (defined $st{D}{ph}) {
+        push @out_mtf, { type => 'MTF_HIGH', label => 'PDH', tf => 'D', price => $st{D}{ph}, start_index => $st{D}{start}, end_index => $until_index };
+        push @out_mtf, { type => 'MTF_LOW',  label => 'PDL', tf => 'D', price => $st{D}{pl}, start_index => $st{D}{start}, end_index => $until_index };
+    }
+    if (defined $st{W}{ph}) {
+        push @out_mtf, { type => 'MTF_HIGH', label => 'PWH', tf => 'W', price => $st{W}{ph}, start_index => $st{W}{start}, end_index => $until_index };
+        push @out_mtf, { type => 'MTF_LOW',  label => 'PWL', tf => 'W', price => $st{W}{pl}, start_index => $st{W}{start}, end_index => $until_index };
+    }
+    if (defined $st{M}{ph}) {
+        push @out_mtf, { type => 'MTF_HIGH', label => 'PMH', tf => 'M', price => $st{M}{ph}, start_index => $st{M}{start}, end_index => $until_index };
+        push @out_mtf, { type => 'MTF_LOW',  label => 'PML', tf => 'M', price => $st{M}{pl}, start_index => $st{M}{start}, end_index => $until_index };
     }
 
-    for my $s (@supports) {
-        my $break_index = _find_break($candles, $s->{index}, $s->{price}, $until_index, -1);
-        push @out, {
-            type        => 'SUPPORT',
-            price       => $s->{price},
-            start_index => $s->{index},
-            end_index   => defined $break_index ? $break_index : $until_index,
-            broken      => defined $break_index ? 1 : 0,
-        };
-    }
+    $self->{mtf_levels} = \@out_mtf;
 
-    $self->{levels} = \@out;
-    return { levels => \@out };
-}
-
-# Busca la primera barra posterior a $start_index cuyo cierre rompa el
-# nivel $price. $direction => 1 (resistencia: rota si close > price) o
-# -1 (soporte: rota si close < price). Devuelve el índice de ruptura o
-# undef si no se rompe dentro de [$start_index+1 .. $until_index].
-sub _find_break {
-    my ($candles, $start_index, $price, $until_index, $direction) = @_;
-
-    for my $i (($start_index + 1) .. $until_index) {
-        my $bar = $candles->[$i];
-        next unless $bar;
-
-        if ($direction == 1) {
-            return $i if $bar->{close} > $price;
-        }
-        else {
-            return $i if $bar->{close} < $price;
-        }
-    }
-
-    return undef;
+    return { mtf_levels => \@out_mtf };
 }
 
 1;

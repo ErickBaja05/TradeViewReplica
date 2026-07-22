@@ -619,6 +619,65 @@ $menu2->cascade(
     -foreground => '#2962ff',
 );
 
+# ── Número de barras del histograma (Volume Profile Anclado) ───────
+# Tk::Menu no admite widgets arbitrarios (como un Scale) embebidos
+# directamente en sus entradas, así que este ítem abre una pequeña
+# ventana emergente (Toplevel) con el deslizador. Límites prudentes:
+# muy pocas franjas (< 10) hacen el histograma poco informativo, y
+# demasiadas (> 150) son costosas de calcular/dibujar y dejan de
+# aportar detalle útil sobre el rango de precios visible.
+my $vp_num_bins_min = 10;
+my $vp_num_bins_max = 150;
+my $vp_num_bins_seleccionada = 24;
+my $vp_num_bins_dialog;
+
+$menu2->command(
+    -label      => "    Numero de Barras (Volume Profile)...",
+    -foreground => '#2962ff',
+    -command    => sub {
+        return unless $chart_engine;
+
+        # Si el diálogo ya está abierto, sólo lo traemos al frente.
+        if ($vp_num_bins_dialog && Tk::Exists($vp_num_bins_dialog)) {
+            $vp_num_bins_dialog->deiconify;
+            $vp_num_bins_dialog->raise;
+            return;
+        }
+
+        $vp_num_bins_dialog = $mw->Toplevel(-bg => '#fbfcf8');
+        $vp_num_bins_dialog->title("Volume Profile: numero de barras");
+        $vp_num_bins_dialog->geometry('320x110');
+        $vp_num_bins_dialog->resizable(0, 0);
+
+        $vp_num_bins_dialog->Label(
+            -text => "Numero de barras del histograma",
+            -bg   => '#fbfcf8',
+            -fg   => '#131722',
+        )->pack(-side => 'top', -pady => [6, 2]);
+
+        $vp_num_bins_dialog->Scale(
+            -orient      => 'horizontal',
+            -from        => $vp_num_bins_min,
+            -to          => $vp_num_bins_max,
+            -resolution  => 1,
+            -tickinterval=> 0,
+            -length      => 280,
+            -bg          => '#fbfcf8',
+            -fg          => '#2962ff',
+            -variable    => \$vp_num_bins_seleccionada,
+            -command     => sub {
+                my ($val) = @_;
+                return unless $chart_engine;
+                $chart_engine->set_volume_profile_num_bins($val);
+            },
+        )->pack(-side => 'top', -padx => 15, -fill => 'x');
+
+        $vp_num_bins_dialog->protocol('WM_DELETE_WINDOW', sub {
+            $vp_num_bins_dialog->withdraw;
+        });
+    },
+);
+
 # ── Anchors: Ghost Anchors / Ghost Lines / Ghost VWAP ───────────────
 # Los tres overlays comparten un único motor de cálculo incremental
 # (Market::Indicators::Anchors), pero cada uno es un simple indicador

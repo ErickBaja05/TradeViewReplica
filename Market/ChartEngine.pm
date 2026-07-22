@@ -210,6 +210,7 @@ sub new {
         vwap_anchored_engine => Market::Indicators::VWAPAnchored->new(
             std_mult => 3,
         ),
+        volume_profile_num_bins => 24,
         volume_profile_anchored_engine => Market::Indicators::VolumeProfileAnchored->new(
             num_bins => 24,
         ),
@@ -587,7 +588,7 @@ sub update_smc_overlay {
     # recorrido vela a vela; Supertrend/HalfTrend/RangeFilter ya se
     # calcularon de forma incremental en el bucle anterior).
     my $fibonacci_result  = $self->{fibonacci_engine}->calculate($smc_result->{structure});
-    my $levels_result     = $self->{levels_engine}->calculate_until($smc_result->{structure}, $candles_full, $until_index);
+    my $levels_result     = $self->{levels_engine}->calculate_until($candles_full, $until_index);
     
 if ($self->{show_multi_vwap}) {
     my $multi_res = $self->{multi_vwap_engine}->update_last($candles_full, $anchors_result, $until_index);
@@ -991,6 +992,37 @@ sub set_volume_profile_sigma_range {
     $self->{volume_profile_sigma_range} = $n;
     $self->{volume_profile_anchored_overlay}->set_sigma_range($n)
         if $self->{volume_profile_anchored_overlay};
+
+    $self->request_render();
+}
+
+=head2 set_volume_profile_num_bins($n)
+
+Configura el número de franjas (barras) del histograma del Volume Profile
+Anclado. Se acota a un rango prudente [5, 200] para evitar histogramas
+degenerados (demasiado pocas franjas) o excesivamente costosos de calcular
+y renderizar (demasiadas franjas). Invalida la caché del indicador para
+forzar un recálculo inmediato con el nuevo número de barras y redibuja si
+el indicador está activo.
+
+=cut
+
+sub set_volume_profile_num_bins {
+    my ($self, $n) = @_;
+    return unless defined $n;
+
+    $n = 5   if $n < 5;
+    $n = 200 if $n > 200;
+    $n = int($n);
+
+    $self->{volume_profile_num_bins} = $n;
+    $self->{volume_profile_anchored_engine}{num_bins} = $n
+        if $self->{volume_profile_anchored_engine};
+
+    # Invalidamos la caché para que el próximo render recalcule el
+    # histograma con el nuevo número de franjas (el cache_key normal no
+    # cambia por sí solo, ya que no depende del ancla ni de la última vela).
+    $self->{volume_profile_cache_key} = undef;
 
     $self->request_render();
 }
