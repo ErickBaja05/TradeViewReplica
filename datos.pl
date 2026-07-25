@@ -143,6 +143,117 @@ sub _resample_bars {
     return (\@resampled, \@group_of_row);
 }
 
+# Constante usada para alinear los cajones semanales al lunes (igual
+# criterio que Market::MarketData::MONDAY_EPOCH_REF): epoch de referencia
+# (segundos) de un lunes 00:00:00 UTC cualquiera (05-ene-1970). El epoch 0
+# (01-ene-1970) fue jueves, así que sin este ajuste los cajones semanales
+# arrancarían en jueves en vez de lunes.
+use constant _MONDAY_EPOCH_REF => 345600;
+
+# Re-muestrea @$data_ref (velas base leídas de input.csv) a barras OHLCV de
+# $minutes minutos, sumando el volumen de las velas agrupadas (a diferencia
+# de _resample_bars(), que sólo se usa internamente para trend_int_* y no
+# necesita volumen). Replica la misma lógica de alineación de cajones que
+# Market::MarketData::build_tf_candles() (incluida la alineación al lunes
+# para la temporalidad semanal), para que el timeframe elegido por el
+# usuario en el menú de consola quede alineado igual que el resto del
+# ecosistema (TradingView-like). Se usa para transformar @data ANTES de
+# correr todos los indicadores, así que todo el resto del script no
+# necesita saber qué timeframe se eligió.
+sub _resample_ohlcv {
+    my ($data_ref, $minutes) = @_;
+    my $bucket_seconds = $minutes * 60;
+    my $is_weekly = ($minutes == 10080);
+
+    my @resampled;
+    my $current_bucket_epoch;
+    my $total_in = scalar @$data_ref;
+
+    for my $i (0 .. $#$data_ref) {
+        _print_progress($i + 1, $total_in, "Re-muestreando a timeframe elegido");
+        my $c     = $data_ref->[$i];
+        my $epoch = _parse_epoch($c->{time});
+        next unless defined $epoch;
+
+        my $bucket_epoch = $is_weekly
+            ? $epoch - (($epoch - _MONDAY_EPOCH_REF) % $bucket_seconds)
+            : $epoch - ($epoch % $bucket_seconds);
+
+        my $vol = $c->{volume};
+        $vol = 0 unless defined $vol && $vol ne '';
+
+        if (!defined $current_bucket_epoch || $bucket_epoch != $current_bucket_epoch) {
+            my (undef, $mm, $hh, $day, $mon, $year) = gmtime($bucket_epoch);
+            my $bucket_time_str = sprintf(
+                "%04d-%02d-%02dT%02d:%02d:00",
+                $year + 1900, $mon + 1, $day, $hh, $mm
+            );
+
+            push @resampled, {
+                time   => $bucket_time_str,
+                open   => 0.0 + $c->{open},
+                high   => 0.0 + $c->{high},
+                low    => 0.0 + $c->{low},
+                close  => 0.0 + $c->{close},
+                volume => 0.0 + $vol,
+            };
+            $current_bucket_epoch = $bucket_epoch;
+        } else {
+            my $bar = $resampled[-1];
+            $bar->{high}   = $c->{high} if $c->{high} > $bar->{high};
+            $bar->{low}    = $c->{low}  if $c->{low}  < $bar->{low};
+            $bar->{close}  = 0.0 + $c->{close};
+            $bar->{volume} += 0.0 + $vol;
+        }
+    }
+
+    return \@resampled;
+}
+
+# Menú de consola: el usuario elige el timeframe de trabajo. Devuelve
+# ($label, $minutes). Si la entrada no es interactiva (EOF) o el usuario
+# ingresa algo inválido repetidamente, hace fallback a "1 minuto" para que
+# el script nunca quede colgado esperando input en un entorno no
+# interactivo (ej. cron, pipe).
+sub _prompt_timeframe {
+    my @options = (
+        ['1 minuto',   1],
+        ['5 minutos',  5],
+        ['15 minutos', 15],
+        ['30 minutos', 30],
+        ['1 hora',     60],
+        ['2 horas',    120],
+        ['4 horas',    240],
+        ['1 dia',      1440],
+        ['1 semana',   10080],
+    );
+
+    print STDERR "\n=== Selecciona el timeframe de trabajo ===\n";
+    for my $i (0 .. $#options) {
+        printf STDERR "  %d) %s\n", $i + 1, $options[$i][0];
+    }
+
+    while (1) {
+        print STDERR "\nIngresa el numero de opcion [1-" . scalar(@options) . "]: ";
+        my $choice = <STDIN>;
+
+        if (!defined $choice) {
+            # EOF / sin entrada interactiva disponible
+            print STDERR "\nNo se recibio entrada; usando '1 minuto' por defecto.\n";
+            return @{ $options[0] };
+        }
+
+        chomp $choice;
+        $choice =~ s/^\s+|\s+$//g;
+
+        if ($choice =~ /^\d+$/ && $choice >= 1 && $choice <= scalar(@options)) {
+            return @{ $options[$choice - 1] };
+        }
+
+        print STDERR "Opcion invalida, intenta de nuevo.\n";
+    }
+}
+
 # Calcula, para cada vela base de @$data_ref, la tendencia interna vigente
 # según el ZigZag (Market::Indicators::ZigzagInternal) de la temporalidad
 # $minutes: re-muestrea las velas base a esa temporalidad, corre el zigzag
@@ -229,11 +340,13 @@ sub compute_anchored_vwap_distances {
 
 my $csv = Text::CSV->new({ binary => 1, auto_diag => 1, eol => "\n" });
 
+my ($timeframe_label, $timeframe_minutes) = _prompt_timeframe();
+print STDERR "Timeframe seleccionado: $timeframe_label\n";
+
 open my $fh_in, "<", $input_file or die "No se pudo abrir $input_file: $!";
 my $headers = $csv->getline($fh_in);
 
-my @data;
-my $market_data = Market::MarketData->new();
+my @raw_data;
 
 while (my $row = $csv->getline($fh_in)) {
     my %row_data = (
@@ -245,10 +358,22 @@ while (my $row = $csv->getline($fh_in)) {
         volume => $row->[5]
     );
 
-    push @data, \%row_data;
-    $market_data->add_candle({ %row_data });
+    push @raw_data, \%row_data;
 }
 close $fh_in;
+
+my @data;
+if ($timeframe_minutes > 1) {
+    print STDERR "Re-muestreando input.csv a $timeframe_label...\n";
+    @data = @{ _resample_ohlcv(\@raw_data, $timeframe_minutes) };
+} else {
+    @data = @raw_data;
+}
+
+my $market_data = Market::MarketData->new();
+for my $c (@data) {
+    $market_data->add_candle({ %$c });
+}
 
 my $total_rows = scalar @data;
 
