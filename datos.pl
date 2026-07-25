@@ -1,0 +1,1144 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use FindBin qw($Bin);
+use lib "$Bin";
+use Text::CSV;
+use Time::Piece;
+use List::Util qw(max min);
+use Market::MarketData;
+use Market::Indicators::ATR;
+use Market::Indicators::SMC_Structures;
+use Market::Indicators::Structure;
+use Market::Indicators::FVG;
+use Market::Indicators::OrderBlocks;
+use Market::Indicators::Liquidity;
+use Market::Indicators::ZigzagInternal;
+use Market::Indicators::Fibonacci;
+use Market::Indicators::HalfTrend;
+use Market::Indicators::Supertrend;
+use Market::Indicators::RangeFilter;
+use Market::Indicators::VWAPAnchored;
+
+# Configuración inicial
+my $input_file = 'input.csv';
+my $output_file = 'output.csv';
+my $length = 50; # Longitud de pivote basada en el script original[cite: 1]
+my $pip_multiplier = 10000;
+my $atr_period = 14;
+
+# ─── Helpers para trend_int_* (zigzag interno multi-temporalidad) ─────────
+# Convierte el campo `time` de una vela (ISO "YYYY-MM-DD[ HH:MM:SS]" o
+# timestamp epoch numérico) a epoch en segundos. Devuelve undef si el
+# formato no es reconocido.
+sub _parse_epoch {
+    my ($time_str) = @_;
+    return undef unless defined $time_str && length $time_str;
+
+    if ($time_str =~ /^\d+$/) {
+        return $time_str;
+    }
+    if ($time_str =~ /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})/) {
+        my $tp = eval { Time::Piece->strptime("$1-$2-$3 $4:$5:$6", "%Y-%m-%d %H:%M:%S") };
+        return $tp ? $tp->epoch : undef;
+    }
+    if ($time_str =~ /^(\d{4})-(\d{2})-(\d{2})$/) {
+        my $tp = eval { Time::Piece->strptime("$1-$2-$3", "%Y-%m-%d") };
+        return $tp ? $tp->epoch : undef;
+    }
+    return undef;
+}
+
+# Extrae (minuto, hora, día, mes, año) del campo `time` de una vela, sin
+# pasar por epoch/Time::Piece (para no perder el "reloj de pared" del CSV,
+# igual criterio que build_tf_candles/las columnas distance_daily_*, que
+# ignoran la zona horaria y usan los componentes Y-M-D H:M:S tal cual
+# aparecen). Soporta el mismo formato ISO ("YYYY-MM-DD[T ]HH:MM:SS...") y
+# timestamp epoch numérico que _parse_epoch. Devuelve una lista de 5
+# elementos (undef en los que no se puedan determinar).
+sub _extract_time_parts {
+    my ($time_str) = @_;
+    return (undef, undef, undef, undef, undef) unless defined $time_str && length $time_str;
+
+    if ($time_str =~ /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})/) {
+        my ($year, $mon, $day, $hh, $mm) = ($1, $2, $3, $4, $5);
+        return (int($mm), int($hh), int($day), int($mon), int($year));
+    }
+    if ($time_str =~ /^(\d{4})-(\d{2})-(\d{2})$/) {
+        my ($year, $mon, $day) = ($1, $2, $3);
+        return (0, 0, int($day), int($mon), int($year));
+    }
+    if ($time_str =~ /^\d+$/) {
+        my @g = gmtime($time_str);
+        return ($g[1], $g[2], $g[3], $g[4] + 1, $g[5] + 1900);
+    }
+    return (undef, undef, undef, undef, undef);
+}
+
+# Barra de progreso simple en STDERR (sin dependencias externas de CPAN).
+# Se redibuja en la misma línea con retorno de carro ("\r"); no ensucia
+# STDOUT (por si el CSV o cualquier otra salida se redirige por pipe).
+# Para no penalizar el rendimiento en series muy largas, sólo redibuja
+# cuando cambia el porcentaje entero (o en la última vela).
+sub _print_progress {
+    my ($current, $total, $label, $width) = @_;
+    return if !$total || $total <= 0;
+    $label //= 'Procesando';
+    $width //= 40;
+
+    my $pct = $current / $total;
+    $pct = 1 if $pct > 1;
+
+    my $prev_pct = $current > 0 ? ($current - 1) / $total : -1;
+    return if int($pct * 100) == int($prev_pct * 100) && $current < $total;
+
+    my $filled = int($pct * $width);
+    my $bar    = ('#' x $filled) . ('-' x ($width - $filled));
+
+    printf STDERR "\r%-38s [%s] %d/%d (%3d%%)", $label, $bar, $current, $total, int($pct * 100);
+    print STDERR "\n" if $current >= $total;
+}
+
+# Re-muestrea @$data_ref (velas base) en barras OHLC de $minutes minutos, en
+# orden cronológico. Devuelve ($resampled_aref, $group_of_row_aref), donde
+# $group_of_row_aref->[$i] es el índice (dentro de $resampled_aref) de la
+# barra a la que pertenece la vela base $i (undef si su `time` no se pudo
+# interpretar y todavía no hay ninguna barra abierta).
+sub _resample_bars {
+    my ($data_ref, $minutes) = @_;
+    my $bucket_seconds = $minutes * 60;
+
+    my @resampled;
+    my @group_of_row = (undef) x scalar(@$data_ref);
+    my $current_key;
+
+    my $total_in = scalar @$data_ref;
+    for my $i (0 .. $#$data_ref) {
+        _print_progress($i + 1, $total_in, "Re-muestreando a ${minutes}min");
+        my $c     = $data_ref->[$i];
+        my $epoch = _parse_epoch($c->{time});
+        my $key   = defined $epoch ? int($epoch / $bucket_seconds) : undef;
+
+        if (defined $key && (!defined $current_key || $key != $current_key)) {
+            push @resampled, {
+                time  => $c->{time},
+                open  => $c->{open},
+                high  => $c->{high},
+                low   => $c->{low},
+                close => $c->{close},
+            };
+            $current_key = $key;
+        } elsif (@resampled) {
+            my $bar = $resampled[-1];
+            $bar->{high}  = $c->{high}  if $c->{high} > $bar->{high};
+            $bar->{low}   = $c->{low}   if $c->{low}  < $bar->{low};
+            $bar->{close} = $c->{close};
+        } else {
+            next; # sin timestamp reconocible y todavía sin ninguna barra abierta
+        }
+
+        $group_of_row[$i] = $#resampled;
+    }
+
+    return (\@resampled, \@group_of_row);
+}
+
+# Calcula, para cada vela base de @$data_ref, la tendencia interna vigente
+# según el ZigZag (Market::Indicators::ZigzagInternal) de la temporalidad
+# $minutes: re-muestrea las velas base a esa temporalidad, corre el zigzag
+# barra a barra sobre la serie re-muestreada (tal como indica el contrato
+# de ZigzagInternal.pm) y propaga (forward-fill) la dirección vigente
+# (`dir`: 1=UP, -1=DOWN, 0=UNKNOWN antes del primer pivote) a cada vela
+# base perteneciente a esa barra.
+sub compute_trend_int {
+    my ($data_ref, $minutes, $period) = @_;
+
+    my ($resampled, $group_of_row) = _resample_bars($data_ref, $minutes);
+    my $total_resampled = scalar @$resampled;
+
+    my @trend_int = (0) x scalar(@$data_ref);
+    return \@trend_int if $total_resampled == 0;
+
+    my $zz = Market::Indicators::ZigzagInternal->new(period => $period // 2);
+    my @trend_resampled = (0) x $total_resampled;
+
+    for my $b (0 .. $total_resampled - 1) {
+        _print_progress($b + 1, $total_resampled, "ZigZag interno ${minutes}min");
+        $zz->update_last($resampled, undef, $b);
+        $trend_resampled[$b] = $zz->{dir} // 0;
+    }
+
+    for my $i (0 .. $#$data_ref) {
+        my $g = $group_of_row->[$i];
+        $trend_int[$i] = defined $g ? $trend_resampled[$g] : 0;
+    }
+
+    return \@trend_int;
+}
+
+# Dado un array de "anclas" (uno por vela: el índice al que debe anclarse el
+# VWAP en esa vela, o undef si todavía no hay ancla disponible), calcula la
+# distancia normalizada por ATR entre el VWAP anclado y el close de cada
+# vela, usando Market::Indicators::VWAPAnchored. En vez de llamar a
+# calculate_until() vela a vela (lo cual recalcularía desde el ancla en cada
+# llamada, con costo O(n) por vela y O(n^2) en total), agrupamos las velas
+# consecutivas que comparten la misma ancla en un solo "segmento" y llamamos
+# a calculate_until() una única vez por segmento (desde el ancla hasta el
+# final del segmento), reutilizando toda la serie devuelta. Esto mantiene el
+# costo total en O(n).
+sub compute_anchored_vwap_distances {
+    my ($vwap_module, $anchor_idx, $data_ref, $atr_values_ref, $total_rows) = @_;
+
+    my @distances = (0) x $total_rows;
+    my $i = 0;
+
+    while ($i < $total_rows) {
+        my $anchor = $anchor_idx->[$i];
+
+        if (!defined $anchor) {
+            $i++;
+            next;
+        }
+
+        my $j = $i;
+        $j++ while ($j + 1 < $total_rows)
+                 && defined($anchor_idx->[$j + 1])
+                 && $anchor_idx->[$j + 1] == $anchor;
+
+        my $result = $vwap_module->calculate_until($data_ref, $anchor, $j);
+        my $values = $result->{values};
+
+        for my $k ($i .. $j) {
+            my $v = $values->[$k - $anchor];
+            next unless $v;
+
+            my $close   = $data_ref->[$k]->{close};
+            my $atr_raw = $atr_values_ref->[$k] // 0;
+            next unless $atr_raw > 0;
+
+            $distances[$k] = ($v->{vwap} - $close) / $atr_raw;
+        }
+
+        _print_progress($j + 1, $total_rows, "VWAP anclado");
+        $i = $j + 1;
+    }
+    _print_progress($total_rows, $total_rows, "VWAP anclado");
+
+    return \@distances;
+}
+
+my $csv = Text::CSV->new({ binary => 1, auto_diag => 1, eol => "\n" });
+
+open my $fh_in, "<", $input_file or die "No se pudo abrir $input_file: $!";
+my $headers = $csv->getline($fh_in);
+
+my @data;
+my $market_data = Market::MarketData->new();
+
+while (my $row = $csv->getline($fh_in)) {
+    my %row_data = (
+        time   => $row->[0],
+        open   => $row->[1],
+        high   => $row->[2],
+        low    => $row->[3],
+        close  => $row->[4],
+        volume => $row->[5]
+    );
+
+    push @data, \%row_data;
+    $market_data->add_candle({ %row_data });
+}
+close $fh_in;
+
+my $total_rows = scalar @data;
+
+# Calcular ATR sobre toda la serie usando MarketData.pm y ATR.pm
+my $atr = Market::Indicators::ATR->new($atr_period);
+$atr->recompute_all($market_data);
+my $atr_values = $atr->get_values();
+
+# Variables de estado
+my $sys_max = 0;
+my $sys_min = 999999;
+my $max_x1 = 0;
+my $min_x1 = 0;
+
+my @is_pivot      = (0) x $total_rows;
+my @is_high_pivot = (0) x $total_rows; # subconjunto de is_pivot: pivotes de tipo HIGH
+my @is_low_pivot  = (0) x $total_rows; # subconjunto de is_pivot: pivotes de tipo LOW
+
+# 1. Procesamiento Incremental (Detección y Rastro de Pivotes)
+print STDERR "Detectando pivotes...\n";
+for my $b (0 .. $total_rows - 1) {
+    _print_progress($b + 1, $total_rows, "Detectando pivotes");
+    my $lookback_idx = $b >= $length ? $b - $length : 0;
+    
+    my $curr_high = $data[$lookback_idx]->{high};
+    my $curr_low  = $data[$lookback_idx]->{low};
+
+    # Lógica de reubicación: Si el máximo o mínimo es superado, marcamos TANTO 
+    # el índice anterior (rastro histórico) como el nuevo[cite: 1].
+    if ($b > 0) {
+        if ($curr_high > $sys_max) {
+            # Se reubica el máximo. Guardamos el anterior como 1.
+            if ($max_x1 > 0) {
+                $is_pivot[$max_x1] = 1;
+                $is_high_pivot[$max_x1] = 1;
+            }
+            
+            # Actualizamos al nuevo índice y lo marcamos también.
+            $max_x1 = $lookback_idx;
+            $is_pivot[$max_x1] = 1;
+            $is_high_pivot[$max_x1] = 1;
+            $sys_max = $curr_high;
+        }
+        
+        if ($curr_low < $sys_min) {
+            # Se reubica el mínimo. Guardamos el anterior como 1.
+            if ($min_x1 > 0) {
+                $is_pivot[$min_x1] = 1;
+                $is_low_pivot[$min_x1] = 1;
+            }
+            
+            # Actualizamos al nuevo índice y lo marcamos también.
+            $min_x1 = $lookback_idx;
+            $is_pivot[$min_x1] = 1;
+            $is_low_pivot[$min_x1] = 1;
+            $sys_min = $curr_low;
+        }
+    } else {
+        # Inicialización en la primera iteración
+        $sys_max = $curr_high;
+        $sys_min = $curr_low;
+        $max_x1 = 0;
+        $min_x1 = 0;
+    }
+
+    # Lógica estándar de pivotes confirmados en retrospectiva
+    my $is_ph = 1;
+    my $is_pl = 1;
+    
+    if ($b >= $length * 2) {
+        my $pivot_candidate_high = $data[$b - $length]->{high};
+        my $pivot_candidate_low  = $data[$b - $length]->{low};
+        
+        for my $i ($b - 2*$length .. $b) {
+            $is_ph = 0 if $data[$i]->{high} > $pivot_candidate_high && $i != ($b - $length);
+            $is_pl = 0 if $data[$i]->{low}  < $pivot_candidate_low  && $i != ($b - $length);
+        }
+        
+        # Guardar el pivote confirmado independientemente de los rastros
+        if ($is_ph || $is_pl) {
+            $is_pivot[$b - $length] = 1;
+            $is_high_pivot[$b - $length] = 1 if $is_ph;
+            $is_low_pivot[$b - $length]  = 1 if $is_pl;
+            # Al confirmarse, reiniciamos el seguimiento local para permitir nuevos rastros
+            $sys_max = $is_ph ? $data[$b - $length]->{high} : 0;
+            $sys_min = $is_pl ? $data[$b - $length]->{low} : 999999;
+        }
+    }
+}
+
+# Estructura de mercado (SMC): recorremos los pivotes en orden cronológico y
+# alimentamos Market::Indicators::SMC_Structures para derivar la tendencia
+# vigente en cada barra. Ver lookup.md para la equivalencia de valores.
+my %TREND_VALUE = ( UP => 1, DOWN => -1, UNKNOWN => 0 );
+my $smc = Market::Indicators::SMC_Structures->new();
+my @trend_series = (0) x $total_rows;
+my $current_trend = 0;
+
+my @hh_price = (undef) x $total_rows;
+my @ll_price = (undef) x $total_rows;
+my $last_hh_price;
+my $last_ll_price;
+
+# Fibonacci: usa el mismo "zigzag externo" que ya construye $smc->{structure}
+# (pivotes estructurales de SMC_Structures) para calcular, en cada vela, los
+# niveles de retroceso entre el último y el penúltimo tramo (ver
+# Fibonacci.pm: usa $structure->[-2] como anchor y $structure->[-3] como
+# origin). $fib->calculate() es O(1) por llamada (solo mira los últimos dos
+# elementos), así que se puede invocar vela a vela sin costo adicional.
+my $fib = Market::Indicators::Fibonacci->new();
+my @fib_labels = ('0', '236', '382', '500', '618', '786', '1000');
+my @nearest_fib_level = (0) x $total_rows;
+
+print STDERR "Calculando estructura SMC y niveles Fibonacci...\n";
+for my $i (0 .. $total_rows - 1) {
+    _print_progress($i + 1, $total_rows, "Estructura SMC / Fibonacci");
+    my $atr_for_pivot = $atr_values->[$i] // 0;
+
+    if ($is_high_pivot[$i]) {
+        my $result = $smc->update_last({
+            type  => 'HIGH',
+            price => $data[$i]->{high},
+            index => $i,
+            atr   => $atr_for_pivot,
+        });
+        my $label = $result->{structure}[-1]{label} // '';
+        $last_hh_price = $data[$i]->{high} if $label eq 'HH';
+    }
+    if ($is_low_pivot[$i]) {
+        my $result = $smc->update_last({
+            type  => 'LOW',
+            price => $data[$i]->{low},
+            index => $i,
+            atr   => $atr_for_pivot,
+        });
+        my $label = $result->{structure}[-1]{label} // '';
+        $last_ll_price = $data[$i]->{low} if $label eq 'LL';
+    }
+
+    $current_trend = $TREND_VALUE{ $smc->{trend} } // 0;
+    $trend_series[$i] = $current_trend;
+
+    $hh_price[$i] = $last_hh_price;
+    $ll_price[$i] = $last_ll_price;
+
+    if ($atr_for_pivot > 0) {
+        my $fib_result = $fib->calculate($smc->{structure});
+        my $fib_levels = $fib_result->{levels};
+        if ($fib_levels && @$fib_levels) {
+            my $close = $data[$i]->{close};
+            my ($best_label, $best_diff);
+            for my $idx (0 .. $#$fib_levels) {
+                my $label = $fib_labels[$idx];
+                next unless defined $label;
+                my $diff = abs($fib_levels->[$idx]{price} - $close);
+                if (!defined $best_diff || $diff < $best_diff) {
+                    $best_diff  = $diff;
+                    $best_label = $label;
+                }
+            }
+            $nearest_fib_level[$i] = $best_label if defined $best_label;
+        }
+    }
+}
+
+# Estructura de mercado (BOS/CHoCH/EQH/EQL): Market::Indicators::Structure
+# procesa internamente sus propios swings (externos e internos) y detecta
+# equal highs/lows, así que basta con llamarlo vela a vela con el historial
+# completo. Los eventos se acumulan en $structure->{events} con el índice de
+# la vela donde ocurrieron (para EQH/EQL ese índice es el de la vela pivote
+# central, no necesariamente la vela actual).
+my $structure = Market::Indicators::Structure->new();
+print STDERR "Calculando estructura de mercado (BOS/CHoCH/EQH/EQL)...\n";
+for my $i (0 .. $total_rows - 1) {
+    _print_progress($i + 1, $total_rows, "Estructura BOS/CHoCH/EQH/EQL");
+    $structure->update_last(\@data, $atr_values, $i);
+}
+
+my @bos_ext   = (0) x $total_rows;
+my @bos_int   = (0) x $total_rows;
+my @choch_ext = (0) x $total_rows;
+my @choch_int = (0) x $total_rows;
+my @eqh       = (0) x $total_rows;
+my @eql       = (0) x $total_rows;
+
+for my $ev (@{ $structure->{events} }) {
+    my $idx = $ev->{index};
+    next unless defined $idx && $idx >= 0 && $idx < $total_rows;
+
+    if ($ev->{type} eq 'BOS_UP' || $ev->{type} eq 'BOS_DOWN') {
+        if ($ev->{tier} eq 'external') { $bos_ext[$idx] = 1; }
+        else                           { $bos_int[$idx] = 1; }
+    } elsif ($ev->{type} eq 'CHoCH_UP' || $ev->{type} eq 'CHoCH_DOWN') {
+        if ($ev->{tier} eq 'external') { $choch_ext[$idx] = 1; }
+        else                           { $choch_int[$idx] = 1; }
+    } elsif ($ev->{type} eq 'EQH') {
+        $eqh[$idx] = 1;
+    } elsif ($ev->{type} eq 'EQL') {
+        $eql[$idx] = 1;
+    }
+}
+
+# Fair Value Gaps (FVG): recorremos las velas en orden cronológico llamando a
+# Market::Indicators::FVG->update_last() vela a vela. En cada índice tomamos
+# el FVG más reciente creado hasta el momento (último elemento de {zones}) y
+# calculamos, respecto al cierre de esa vela: si el cierre está dentro de la
+# zona (inside_fvg), la distancia normalizada por ATR entre el centro de la
+# zona y el cierre (distance_FVG), y el tamaño de la zona en pips (fvg_size).
+my $fvg = Market::Indicators::FVG->new();
+my @inside_fvg   = (0) x $total_rows;
+my @distance_fvg = (0) x $total_rows;
+my @fvg_size     = (0) x $total_rows;
+my @fvg_created_index = (undef) x $total_rows;
+
+print STDERR "Calculando Fair Value Gaps...\n";
+for my $i (0 .. $total_rows - 1) {
+    _print_progress($i + 1, $total_rows, "Fair Value Gaps");
+    my $result = $fvg->update_last(\@data, $atr_values, $i);
+    my $zones  = $result->{zones};
+    my $recent = ($zones && @$zones) ? $zones->[-1] : undef;
+
+    if ($recent) {
+        my $close   = $data[$i]->{close};
+        my $atr_raw = $atr_values->[$i] // 0;
+        my $center  = ($recent->{top} + $recent->{bottom}) / 2;
+
+        $inside_fvg[$i] = ($close >= $recent->{bottom} && $close <= $recent->{top}) ? 1 : 0;
+        $distance_fvg[$i] = $atr_raw > 0 ? ($center - $close) / $atr_raw : 0;
+        $fvg_size[$i] = ($recent->{top} - $recent->{bottom}) * $pip_multiplier;
+        $fvg_created_index[$i] = $recent->{created_index};
+    }
+}
+
+# Order Blocks: recorremos las velas en orden cronológico llamando a
+# Market::Indicators::OrderBlocks->update_last() vela a vela. En cada índice
+# tomamos el Order Block más reciente creado hasta el momento (último
+# elemento de {zones}) y calculamos, respecto al cierre de esa vela: si el
+# cierre está dentro de la zona (inside_order_block), la distancia
+# normalizada por ATR entre el poi de la zona y el cierre (distance_ob), y
+# el tipo de zona (ob_type: 1 = SUPPLY/offer, -1 = DEMAND).
+my $order_blocks = Market::Indicators::OrderBlocks->new();
+my @inside_ob = (0) x $total_rows;
+my @distance_ob = (0) x $total_rows;
+my @ob_type = (0) x $total_rows;
+my @ob_created_index = (undef) x $total_rows;
+
+print STDERR "Calculando Order Blocks...\n";
+for my $i (0 .. $total_rows - 1) {
+    _print_progress($i + 1, $total_rows, "Order Blocks");
+    my $result = $order_blocks->update_last(\@data, $atr_values, $i);
+    my $zones  = $result->{zones};
+    my $recent = ($zones && @$zones) ? $zones->[-1] : undef;
+
+    if ($recent) {
+        my $close   = $data[$i]->{close};
+        my $atr_raw = $atr_values->[$i] // 0;
+
+        $inside_ob[$i] = ($close >= $recent->{bottom} && $close <= $recent->{top}) ? 1 : 0;
+        $distance_ob[$i] = $atr_raw > 0 ? ($recent->{poi} - $close) / $atr_raw : 0;
+        $ob_type[$i] = $recent->{type} eq 'SUPPLY' ? 1 : -1;
+        $ob_created_index[$i] = $recent->{created_index};
+    }
+}
+
+# Niveles MTF (Multi Time Frame): en vez de llamar a
+# Market::Indicators::Levels->calculate_until() vela a vela (lo cual
+# recalcula toda la historia desde cero en cada llamada, con costo O(n) por
+# vela y O(n^2) en total), replicamos aquí la misma lógica de detección de
+# cambio de período (día/semana/mes) y de Alto/Bajo del período anterior,
+# pero de forma incremental: cada vela se procesa una sola vez, en O(1)
+# amortizado, manteniendo el mismo criterio de claves (Y-M-D, semana ISO
+# Y-W vía Time::Piece, Y-M) y el mismo resultado que Levels.pm.
+my @distance_daily_high   = (0) x $total_rows;
+my @distance_daily_low    = (0) x $total_rows;
+my @distance_weekly_high  = (0) x $total_rows;
+my @distance_weekly_low   = (0) x $total_rows;
+my @distance_monthly_high = (0) x $total_rows;
+my @distance_monthly_low  = (0) x $total_rows;
+
+{
+    my %st = (
+        D => { key => '', h => -1, l => 9999999, ph => undef, pl => undef },
+        W => { key => '', h => -1, l => 9999999, ph => undef, pl => undef },
+        M => { key => '', h => -1, l => 9999999, ph => undef, pl => undef },
+    );
+
+    print STDERR "Calculando niveles MTF (diario/semanal/mensual)...\n";
+    for my $i (0 .. $total_rows - 1) {
+        _print_progress($i + 1, $total_rows, "Niveles MTF diario/semanal/mensual");
+        my $c = $data[$i];
+
+        if ($c->{time}) {
+            my ($year, $mon, $mday);
+            if ($c->{time} =~ /^(\d{4})-(\d{2})-(\d{2})/) {
+                ($year, $mon, $mday) = ($1, $2, $3);
+            } elsif ($c->{time} =~ /^\d+$/) {
+                my @g = gmtime($c->{time});
+                ($year, $mon, $mday) = ($g[5] + 1900, sprintf("%02d", $g[4] + 1), sprintf("%02d", $g[3]));
+            }
+
+            if (defined $year) {
+                my $d_key = "$year-$mon-$mday";
+                my $tp    = Time::Piece->strptime("$year-$mon-$mday", "%Y-%m-%d");
+                my $w_key = $tp->strftime("%G-%V");
+                my $m_key = "$year-$mon";
+
+                for my $pair ([D => $d_key], [W => $w_key], [M => $m_key]) {
+                    my ($tf, $key) = @$pair;
+                    my $s = $st{$tf};
+                    if ($s->{key} ne $key) {
+                        $s->{ph} = $s->{h} if $s->{key};
+                        $s->{pl} = $s->{l} if $s->{key};
+                        $s->{key} = $key;
+                        $s->{h}   = $c->{high};
+                        $s->{l}   = $c->{low};
+                    } else {
+                        $s->{h} = $c->{high} if $c->{high} > $s->{h};
+                        $s->{l} = $c->{low}  if $c->{low}  < $s->{l};
+                    }
+                }
+            }
+        }
+
+        my $close   = $data[$i]->{close};
+        my $atr_raw = $atr_values->[$i] // 0;
+        next unless $atr_raw > 0;
+
+        $distance_daily_high[$i]   = ($st{D}{ph} - $close) / $atr_raw if defined $st{D}{ph};
+        $distance_daily_low[$i]    = ($st{D}{pl} - $close) / $atr_raw if defined $st{D}{pl};
+        $distance_weekly_high[$i]  = ($st{W}{ph} - $close) / $atr_raw if defined $st{W}{ph};
+        $distance_weekly_low[$i]   = ($st{W}{pl} - $close) / $atr_raw if defined $st{W}{pl};
+        $distance_monthly_high[$i] = ($st{M}{ph} - $close) / $atr_raw if defined $st{M}{ph};
+        $distance_monthly_low[$i]  = ($st{M}{pl} - $close) / $atr_raw if defined $st{M}{pl};
+    }
+}
+
+# Liquidez (BSL/SSL) + swings menores (SH/SL): recorremos las velas en
+# orden cronológico llamando a Market::Indicators::Liquidity->update_last()
+# vela a vela. En vez de volver a escanear toda la lista de niveles/pivotes
+# en cada vela (lo cual sería O(n) por vela), aprovechamos que tanto los
+# niveles de liquidez ($result->{liquidity}) como los pivotes menores
+# ($result->{minor_pivots}) siempre se agregan al final de sus respectivas
+# listas: comparamos el tamaño de cada lista antes/después de cada llamada
+# y solo inspeccionamos las entradas nuevas (O(1) amortizado por vela).
+#
+# Nota sobre "is_sh"/"is_sl": un pivote menor se confirma varias velas
+# después de ocurrir (cuando el precio se aleja lo suficiente, según
+# minor_atr_mult), y su índice (`->{index}`) es el de la vela donde ocurrió
+# el extremo, no el de la vela de confirmación. Por eso "is_sh"/"is_sl" se
+# marcan retroactivamente en `->{index}` en cuanto el pivote aparece en
+# `minor_pivots`, no en la vela `$i` que dispara la confirmación.
+my $liquidity = Market::Indicators::Liquidity->new();
+my @distance_bsl = (0) x $total_rows;
+my @distance_ssl = (0) x $total_rows;
+my @lq_event     = (-1) x $total_rows;
+my @is_sh        = (0) x $total_rows;
+my @is_sl        = (0) x $total_rows;
+my @distance_sh  = (0) x $total_rows;
+my @distance_sl  = (0) x $total_rows;
+
+my $last_bsl_price;
+my $last_ssl_price;
+my $last_sh_price;
+my $last_sl_price;
+my $prev_liq_count   = 0;
+my $prev_minor_count = 0;
+
+print STDERR "Calculando liquidez (BSL/SSL) y swings menores...\n";
+for my $i (0 .. $total_rows - 1) {
+    _print_progress($i + 1, $total_rows, "Liquidez y swings menores");
+    my $result = $liquidity->update_last(\@data, $atr_values, $i);
+
+    if ($result) {
+        my $liq_list  = $result->{liquidity};
+        my $new_count = scalar @$liq_list;
+        if ($new_count > $prev_liq_count) {
+            for my $k ($prev_liq_count .. $new_count - 1) {
+                my $lvl = $liq_list->[$k];
+                if ($lvl->{type} eq 'BSL') {
+                    $last_bsl_price = $lvl->{price};
+                } elsif ($lvl->{type} eq 'SSL') {
+                    $last_ssl_price = $lvl->{price};
+                }
+            }
+            $prev_liq_count = $new_count;
+        }
+
+        my $minor_list  = $result->{minor_pivots};
+        my $new_minor_count = scalar @$minor_list;
+        if ($new_minor_count > $prev_minor_count) {
+            for my $k ($prev_minor_count .. $new_minor_count - 1) {
+                my $p   = $minor_list->[$k];
+                my $idx = $p->{index};
+                next unless defined $idx && $idx >= 0 && $idx < $total_rows;
+                if ($p->{type} eq 'HIGH') {
+                    $is_sh[$idx]  = 1;
+                    $last_sh_price = $p->{price};
+                } elsif ($p->{type} eq 'LOW') {
+                    $is_sl[$idx]  = 1;
+                    $last_sl_price = $p->{price};
+                }
+            }
+            $prev_minor_count = $new_minor_count;
+        }
+    }
+
+    my $close   = $data[$i]->{close};
+    my $atr_raw = $atr_values->[$i] // 0;
+    next unless $atr_raw > 0;
+
+    $distance_bsl[$i] = ($last_bsl_price - $close) / $atr_raw if defined $last_bsl_price;
+    $distance_ssl[$i] = ($last_ssl_price - $close) / $atr_raw if defined $last_ssl_price;
+    $distance_sh[$i]  = ($last_sh_price  - $close) / $atr_raw if defined $last_sh_price;
+    $distance_sl[$i]  = ($last_sl_price  - $close) / $atr_raw if defined $last_sl_price;
+}
+
+# Los eventos de resolución (Sweep/Grab/Run) se guardan en el propio nivel
+# (`resolved_index`, `classification`) en vez de en una lista de eventos
+# aparte, así que hacemos un único recorrido final -O(m), con m = cantidad
+# total de niveles de liquidez creados- sobre $liquidity->{liquidity} para
+# volcar cada resolución en la vela (`index`) donde ocurrió.
+my $total_liq_levels = scalar @{ $liquidity->{liquidity} };
+print STDERR "Volcando resoluciones de liquidez (Sweep/Grab/Run)...\n";
+my $liq_lvl_n = 0;
+for my $lvl (@{ $liquidity->{liquidity} }) {
+    $liq_lvl_n++;
+    _print_progress($liq_lvl_n, $total_liq_levels, "Resoluciones de liquidez");
+    next unless defined $lvl->{resolved_index} && defined $lvl->{classification};
+    my $idx = $lvl->{resolved_index};
+    next unless $idx >= 0 && $idx < $total_rows;
+
+    my $code;
+    if ($lvl->{classification} eq 'Sweep') {
+        $code = $lvl->{type} eq 'BSL' ? 0 : 1;
+    } elsif ($lvl->{classification} eq 'Grab') {
+        $code = 2;
+    } elsif ($lvl->{classification} eq 'Run') {
+        $code = 3;
+    }
+    $lq_event[$idx] = $code if defined $code;
+}
+
+# bars_since_*: cantidad de velas transcurridas desde el último evento de
+# cada tipo, incluyendo la propia vela del evento (que vale 0). Mientras
+# el evento correspondiente todavía no ha ocurrido ninguna vez en la
+# serie, se guarda -1 (mismo criterio de "sin datos todavía" que ya usa
+# `lq_event`, para distinguirlo de "ocurrió hace 0 velas").
+#   - bars_since_bos:      último BOS *externo* (`bos_ext`).
+#   - bars_since_choch:    último CHoCH *externo* (`choch_ext`).
+#   - bars_since_fvg:      creación del último Fair Value Gap (`created_index`
+#                          de la zona más reciente que reporta FVG.pm).
+#   - bars_since_ob:       creación del último Order Block (`created_index`
+#                          de la zona más reciente que reporta OrderBlocks.pm).
+#   - bars_since_lq_event: última resolución de liquidez (`lq_event != -1`).
+my @bars_since_bos      = (-1) x $total_rows;
+my @bars_since_choch    = (-1) x $total_rows;
+my @bars_since_fvg      = (-1) x $total_rows;
+my @bars_since_ob       = (-1) x $total_rows;
+my @bars_since_lq_event = (-1) x $total_rows;
+
+{
+    my ($last_bos, $last_choch, $last_fvg, $last_ob, $last_lq);
+
+    print STDERR "Calculando bars_since (BOS/CHoCH/FVG/OB/liquidez)...\n";
+    for my $i (0 .. $total_rows - 1) {
+        _print_progress($i + 1, $total_rows, "bars_since_*");
+        $last_bos   = $i if $bos_ext[$i];
+        $last_choch = $i if $choch_ext[$i];
+        $last_lq    = $i if $lq_event[$i] != -1;
+
+        my $fvg_created = $fvg_created_index[$i];
+        $last_fvg = $fvg_created if defined $fvg_created;
+
+        my $ob_created = $ob_created_index[$i];
+        $last_ob = $ob_created if defined $ob_created;
+
+        $bars_since_bos[$i]      = $i - $last_bos   if defined $last_bos;
+        $bars_since_choch[$i]    = $i - $last_choch if defined $last_choch;
+        $bars_since_fvg[$i]      = $i - $last_fvg   if defined $last_fvg;
+        $bars_since_ob[$i]       = $i - $last_ob    if defined $last_ob;
+        $bars_since_lq_event[$i] = $i - $last_lq    if defined $last_lq;
+    }
+}
+
+# trend_int_*: tendencia interna (zigzag) en 15min/30min/1hr/2hr/4hr,
+# re-muestreando las velas base a cada temporalidad y corriendo
+# Market::Indicators::ZigzagInternal sobre la serie re-muestreada.
+print STDERR "Calculando tendencia interna multi-temporalidad (trend_int_*)...\n";
+my $trend_int_15min = compute_trend_int(\@data, 15);
+my $trend_int_30min = compute_trend_int(\@data, 30);
+my $trend_int_1hr    = compute_trend_int(\@data, 60);
+my $trend_int_2hr    = compute_trend_int(\@data, 120);
+my $trend_int_4hr    = compute_trend_int(\@data, 240);
+
+# HalfTrend: Market::Indicators::HalfTrend calcula su propio ATR Wilder
+# interno (atr_period=100, fijo) para su lógica de trend/canal, así que no
+# depende de $atr_values. Lo recorremos vela a vela con el historial
+# completo (según su contrato incremental) y, para las distancias, usamos
+# el ATR "del gráfico" ($atr_values, el mismo que el resto de columnas
+# distance_*) en vez del ATR Wilder interno del indicador, para mantener
+# la misma escala/criterio que las demás columnas de distancia.
+# "UNKNOWN" (0) se usa mientras el ATR Wilder interno todavía no tiene
+# suficientes velas (calentamiento de atr_period barras); recién entonces
+# el indicador empieza a clasificar trend como alcista/bajista.
+my $halftrend = Market::Indicators::HalfTrend->new();
+my @half_trend               = (0) x $total_rows;
+my @distance_high_half_trend = (0) x $total_rows;
+my @distance_low_half_trend  = (0) x $total_rows;
+
+print STDERR "Calculando HalfTrend...\n";
+for my $i (0 .. $total_rows - 1) {
+    _print_progress($i + 1, $total_rows, "HalfTrend");
+    my $result = $halftrend->update_last(\@data, $atr_values, $i);
+    my $value  = $result->{values}[$i];
+
+    next unless $value && defined $halftrend->{atr_wilder};
+
+    $half_trend[$i] = $value->{trend} == 0 ? 1 : -1;
+
+    my $close   = $data[$i]->{close};
+    my $atr_raw = $atr_values->[$i] // 0;
+    next unless $atr_raw > 0;
+
+    $distance_high_half_trend[$i] = ($value->{atr_high} - $close) / $atr_raw;
+    $distance_low_half_trend[$i]  = ($value->{atr_low}  - $close) / $atr_raw;
+}
+
+# SuperTrend: al igual que HalfTrend, Market::Indicators::Supertrend
+# calcula su propio ATR interno (Wilder por defecto, `change_atr => 1`) y
+# no depende de $atr_values para su lógica de `up`/`dn`/`trend`. Para las
+# distancias usamos, igual que en HalfTrend, el ATR "del gráfico"
+# ($atr_values) en vez del ATR interno del indicador, para mantener la
+# misma escala que el resto de columnas distance_*. `up` es la banda
+# inferior (soporte en tendencia alcista) y `dn` la banda superior
+# (resistencia en tendencia bajista); "high"/"low" en el nombre de las
+# columnas se refiere a esa posición relativa de la banda, no a la vela.
+my $supertrend = Market::Indicators::Supertrend->new();
+my @super_trend               = (0) x $total_rows;
+my @distance_high_super_trend = (0) x $total_rows;
+my @distance_low_super_trend  = (0) x $total_rows;
+
+print STDERR "Calculando SuperTrend...\n";
+for my $i (0 .. $total_rows - 1) {
+    _print_progress($i + 1, $total_rows, "SuperTrend");
+    my $result = $supertrend->update_last(\@data, $atr_values, $i);
+    my $value  = $result->{values}[$i];
+
+    next unless $value && defined $supertrend->{atr_wilder};
+
+    $super_trend[$i] = $value->{trend};
+
+    my $close   = $data[$i]->{close};
+    my $atr_raw = $atr_values->[$i] // 0;
+    next unless $atr_raw > 0;
+
+    $distance_high_super_trend[$i] = ($value->{dn} - $close) / $atr_raw;
+    $distance_low_super_trend[$i]  = ($value->{up} - $close) / $atr_raw;
+}
+
+# Range Filter: Market::Indicators::RangeFilter replica la lógica
+# PineScript de "Range Filter" (smoothrng/rngfilt), basada únicamente en
+# dos EMA anidadas sobre |close - close[1]| (no usa $atr_values). Para las
+# distancias (`distance_high_range_filter`/`distance_low_range_filter`) se
+# usa el ATR "del gráfico" ($atr_values), igual criterio que en
+# HalfTrend/SuperTrend, para mantener la misma escala que el resto de
+# columnas distance_*.
+my $range_filter = Market::Indicators::RangeFilter->new();
+my @range_filter               = (0) x $total_rows;
+my @distance_high_range_filter = (0) x $total_rows;
+my @distance_low_range_filter  = (0) x $total_rows;
+
+print STDERR "Calculando Range Filter...\n";
+for my $i (0 .. $total_rows - 1) {
+    _print_progress($i + 1, $total_rows, "Range Filter");
+    my $result = $range_filter->update_last(\@data, $atr_values, $i);
+    my $value  = $result->{values}[$i];
+
+    next unless $value;
+
+    $range_filter[$i] = $value->{trend};
+
+    my $close   = $data[$i]->{close};
+    my $atr_raw = $atr_values->[$i] // 0;
+    next unless $atr_raw > 0;
+
+    $distance_high_range_filter[$i] = ($value->{hband} - $close) / $atr_raw;
+    $distance_low_range_filter[$i]  = ($value->{lband} - $close) / $atr_raw;
+}
+
+# VWAP Anclado (Anchored VWAP): Market::Indicators::VWAPAnchored calcula un
+# VWAP con bandas de desviación estándar, reiniciado ("anclado") en un
+# índice de vela concreto. Aquí se calculan 5 variantes, cada una con un
+# criterio de ancla distinto, y se vuelca la distancia normalizada por ATR
+# entre el `vwap` de esa ancla y el `close` de cada vela (mismo criterio
+# `distance = (level - close) / ATR` que el resto de columnas `distance_*`,
+# usando siempre el ATR "del gráfico", $atr_values).
+#
+# - session_vwap_distance: ancla fija en la primera vela de toda la serie
+#   (índice 0), acumulando desde el inicio del histórico.
+# - open_vwap_distance: ancla en la apertura de la última sesión de mercado
+#   vigente en cada vela, según Market::MarketData->find_last_session_open_index(),
+#   que detecta el hueco de tiempo más grande antes de esa vela (cierre
+#   diario, corte de fin de semana, etc.).
+# - bos_vwap_distance: ancla en la vela del último BOS *externo*
+#   (`bos_ext`, ver Structure más arriba) confirmado hasta esa vela.
+# - choch_vwap_distance: ancla en la vela del último CHoCH *externo*
+#   (`choch_ext`) confirmado hasta esa vela.
+# - pivot_vwap_distance: ancla en la última vela marcada como pivote
+#   (`is_pivot`, alta o baja, ver detección de pivotes más arriba).
+#
+# Mientras la ancla correspondiente todavía no existe (por ejemplo, antes
+# del primer BOS/CHoCH/pivote de la serie), la distancia queda en `0`.
+my $vwap_anchored = Market::Indicators::VWAPAnchored->new();
+
+my @session_anchor_idx = (0) x $total_rows;   # siempre ancla en la vela 0
+
+my @open_anchor_idx;
+print STDERR "Calculando anclas de sesión (open_vwap)...\n";
+{
+    # Réplica O(n) de Market::MarketData->find_last_session_open_index():
+    # detecta, en una sola pasada hacia adelante, el hueco de tiempo más
+    # grande entre dos velas consecutivas (cierre diario, corte de fin de
+    # semana, etc.) y propaga (forward-fill) el índice de la vela de
+    # "apertura" de la sesión vigente. El método original de MarketData.pm
+    # escanea hacia atrás desde cada vela (O(n) por llamada, O(n^2) en
+    # total sobre toda la serie); aquí basta con recordar el último hueco
+    # significativo visto hasta el momento (O(1) amortizado por vela).
+    # Mismo criterio de "hueco significativo" que el original: > 3 veces el
+    # intervalo típico entre las dos primeras velas de la serie.
+    my $e0 = _parse_epoch($data[0]->{time});
+    my $e1 = $total_rows > 1 ? _parse_epoch($data[1]->{time}) : undef;
+    my $typical = (defined $e0 && defined $e1 && $e1 - $e0 > 0) ? $e1 - $e0 : 60;
+    my $threshold = $typical * 3;
+
+    my $last_session_open = 0;
+    my $prev_epoch = $e0;
+    $open_anchor_idx[0] = 0 if $total_rows > 0;
+
+    for my $i (1 .. $total_rows - 1) {
+        _print_progress($i + 1, $total_rows, "Anclas de sesión");
+        my $epoch = _parse_epoch($data[$i]->{time});
+
+        if (defined $prev_epoch && defined $epoch) {
+            my $gap = $epoch - $prev_epoch;
+            $last_session_open = $i if $gap > $threshold;
+        }
+
+        $open_anchor_idx[$i] = $last_session_open;
+        $prev_epoch = $epoch if defined $epoch;
+    }
+}
+
+my (@bos_anchor_idx, @choch_anchor_idx, @pivot_anchor_idx);
+my ($last_bos_ext_idx, $last_choch_ext_idx, $last_pivot_idx);
+print STDERR "Calculando anclas de BOS/CHoCH/pivote...\n";
+for my $i (0 .. $total_rows - 1) {
+    _print_progress($i + 1, $total_rows, "Anclas BOS/CHoCH/pivote");
+    $last_bos_ext_idx   = $i if $bos_ext[$i];
+    $last_choch_ext_idx = $i if $choch_ext[$i];
+    $last_pivot_idx     = $i if $is_pivot[$i];
+
+    $bos_anchor_idx[$i]   = $last_bos_ext_idx;
+    $choch_anchor_idx[$i] = $last_choch_ext_idx;
+    $pivot_anchor_idx[$i] = $last_pivot_idx;
+}
+
+print STDERR "Calculando VWAP anclado: session_vwap...\n";
+my $session_vwap_distance = compute_anchored_vwap_distances(
+    $vwap_anchored, \@session_anchor_idx, \@data, $atr_values, $total_rows);
+print STDERR "Calculando VWAP anclado: open_vwap...\n";
+my $open_vwap_distance = compute_anchored_vwap_distances(
+    $vwap_anchored, \@open_anchor_idx, \@data, $atr_values, $total_rows);
+print STDERR "Calculando VWAP anclado: bos_vwap...\n";
+my $bos_vwap_distance = compute_anchored_vwap_distances(
+    $vwap_anchored, \@bos_anchor_idx, \@data, $atr_values, $total_rows);
+print STDERR "Calculando VWAP anclado: choch_vwap...\n";
+my $choch_vwap_distance = compute_anchored_vwap_distances(
+    $vwap_anchored, \@choch_anchor_idx, \@data, $atr_values, $total_rows);
+print STDERR "Calculando VWAP anclado: pivot_vwap...\n";
+my $pivot_vwap_distance = compute_anchored_vwap_distances(
+    $vwap_anchored, \@pivot_anchor_idx, \@data, $atr_values, $total_rows);
+
+# 2. Generación Retroactiva y Escritura en CSV
+open my $fh_out, ">", $output_file or die "No se pudo crear $output_file: $!";
+$csv->print($fh_out, [
+    # --- Tiempo ---
+    "minute", "hour", "day", "month", "year",
+    # --- Vela (OHLCV, ATR y geometría de la vela) ---
+    "open (pip)", "high (pip)", "low (pip)", "close (pip)",
+    "volume", "atr (pip)",
+    "body", "upper_wick", "lower_wick", "candle_type", "momentum", "lenght",
+    # --- Pivotes (detección propia del script) ---
+    "pivote", "pivote3", "pivote5", "pivote10", "pivote15",
+    # --- Estructura de mercado (Market::Indicators::SMC_Structures / Structure) ---
+    "trend_ext", "bos_ext", "bos_int", "choch_ext", "choch_int", "eqh", "eql",
+    "bars_since_bos", "bars_since_choch",
+    # --- Fair Value Gaps (Market::Indicators::FVG) ---
+    "inside_fvg", "distance_FVG", "fvg_size", "bars_since_fvg",
+    # --- Order Blocks (Market::Indicators::OrderBlocks) ---
+    "inside_order_block", "distance_ob", "ob_type", "bars_since_ob",
+    # --- Último HH/LL confirmado (SMC_Structures) ---
+    "distance_hh", "distance_ll",
+    # --- Fibonacci (Market::Indicators::Fibonacci) ---
+    "nearest_fib_level",
+    # --- Niveles MTF: alto/bajo del período anterior (día/semana/mes) ---
+    "distance_daily_high", "distance_daily_low",
+    "distance_weekly_high", "distance_weekly_low",
+    "distance_monthly_high", "distance_monthly_low",
+    # --- Liquidez y swings menores (Market::Indicators::Liquidity) ---
+    "distance_bsl", "distance_ssl", "lq_event", "bars_since_lq_event",
+    "is_sh", "is_sl", "distance_sh", "distance_sl",
+    # --- Tendencia interna multi-temporalidad (ZigzagInternal re-muestreado) ---
+    "trend_int_15min", "trend_int_30min", "trend_int_1hr", "trend_int_2hr", "trend_int_4hr",
+    # --- HalfTrend (Market::Indicators::HalfTrend) ---
+    "half_trend", "distance_high_half_trend", "distance_low_half_trend",
+    # --- SuperTrend (Market::Indicators::Supertrend) ---
+    "super_trend", "distance_high_super_trend", "distance_low_super_trend",
+    # --- Range Filter (Market::Indicators::RangeFilter) ---
+    "range_filter", "distance_high_range_filter", "distance_low_range_filter",
+    # --- VWAP Anclado (Market::Indicators::VWAPAnchored) ---
+    "session_vwap_distance", "open_vwap_distance", "bos_vwap_distance",
+    "choch_vwap_distance", "pivot_vwap_distance"
+]);
+
+print STDERR "Generando output.csv ($total_rows velas)...\n";
+
+for my $i (0 .. $total_rows - 1) {
+    _print_progress($i + 1, $total_rows, "Generando output.csv");
+
+    # Pip "de verdad": variacion en puntos porcentuales (pips) respecto al cierre
+    # de la vela anterior, en vez de precio absoluto * multiplicador.
+    my $prev_close = $i > 0 ? $data[$i - 1]->{close} : $data[$i]->{open};
+
+    my $open_pip  = ($data[$i]->{open}  - $prev_close) / $prev_close * $pip_multiplier;
+    my $high_pip  = ($data[$i]->{high}  - $prev_close) / $prev_close * $pip_multiplier;
+    my $low_pip   = ($data[$i]->{low}   - $prev_close) / $prev_close * $pip_multiplier;
+    my $close_pip = ($data[$i]->{close} - $prev_close) / $prev_close * $pip_multiplier;
+
+    my $volume = $data[$i]->{volume};
+
+    # ATR calculado por Market::Indicators::ATR sobre precios absolutos;
+    # lo convertimos a pips para que quede en la misma escala que el resto
+    # de columnas de precio. Durante el periodo de calentamiento se guarda 0
+    # en vez de dejarlo vacío.
+    my $atr_raw = $atr_values->[$i];
+    my $atr_pip = defined $atr_raw ? $atr_raw * $pip_multiplier : 0;
+
+    # Geometría de la vela (cuerpo, mechas, largo total) y momentum, en
+    # pips "de tamaño" (precio absoluto * pip_multiplier, igual criterio
+    # que `fvg_size`/`atr (pip)`, NO relativos al cierre anterior como
+    # open/high/low/close_pip).
+    my $c_open  = $data[$i]->{open};
+    my $c_high  = $data[$i]->{high};
+    my $c_low   = $data[$i]->{low};
+    my $c_close = $data[$i]->{close};
+    my $body_max = $c_open > $c_close ? $c_open : $c_close;
+    my $body_min = $c_open < $c_close ? $c_open : $c_close;
+
+    my $body        = abs($c_close - $c_open) * $pip_multiplier;
+    my $upper_wick  = ($c_high - $body_max) * $pip_multiplier;
+    my $lower_wick  = ($body_min - $c_low) * $pip_multiplier;
+    my $candle_type = $c_close >= $c_open ? 1 : -1;
+    my $momentum    = ($c_close - $prev_close) * $pip_multiplier;
+    my $length      = ($c_high - $c_low) * $pip_multiplier;
+
+    my ($minute, $hour, $day, $month, $year) = _extract_time_parts($data[$i]->{time});
+    $minute //= 0;
+    $hour   //= 0;
+    $day    //= 0;
+    $month  //= 0;
+    $year   //= 0;
+
+    my $trend = $trend_series[$i];
+
+    my $atr_raw_for_dist = $atr_values->[$i] // 0;
+    my $distance_hh = (defined $hh_price[$i] && $atr_raw_for_dist > 0)
+        ? ($hh_price[$i] - $data[$i]->{close}) / $atr_raw_for_dist : 0;
+    my $distance_ll = (defined $ll_price[$i] && $atr_raw_for_dist > 0)
+        ? ($ll_price[$i] - $data[$i]->{close}) / $atr_raw_for_dist : 0;
+
+    my $pivote = $is_pivot[$i];
+
+    my $pivote3  = 0;
+    my $pivote5  = 0;
+    my $pivote10 = 0;
+    my $pivote15 = 0;
+
+    for my $j (1 .. 15) {
+        last if ($i + $j) >= $total_rows;
+        if ($is_pivot[$i + $j]) {
+            $pivote3  = 1 if $j <= 3;
+            $pivote5  = 1 if $j <= 5;
+            $pivote10 = 1 if $j <= 10;
+            $pivote15 = 1; 
+        }
+    }
+
+    $csv->print($fh_out, [
+        # --- Tiempo ---
+        $minute,
+        $hour,
+        $day,
+        $month,
+        $year,
+        # --- Vela (OHLCV, ATR y geometría de la vela) ---
+        sprintf("%.4f", $open_pip),
+        sprintf("%.4f", $high_pip),
+        sprintf("%.4f", $low_pip),
+        sprintf("%.4f", $close_pip),
+        $volume,
+        sprintf("%.4f", $atr_pip),
+        sprintf("%.4f", $body),
+        sprintf("%.4f", $upper_wick),
+        sprintf("%.4f", $lower_wick),
+        $candle_type,
+        sprintf("%.4f", $momentum),
+        sprintf("%.4f", $length),
+        # --- Pivotes ---
+        $pivote,
+        $pivote3,
+        $pivote5,
+        $pivote10,
+        $pivote15,
+        # --- Estructura de mercado ---
+        $trend,
+        $bos_ext[$i],
+        $bos_int[$i],
+        $choch_ext[$i],
+        $choch_int[$i],
+        $eqh[$i],
+        $eql[$i],
+        $bars_since_bos[$i],
+        $bars_since_choch[$i],
+        # --- Fair Value Gaps ---
+        $inside_fvg[$i],
+        sprintf("%.4f", $distance_fvg[$i]),
+        sprintf("%.4f", $fvg_size[$i]),
+        $bars_since_fvg[$i],
+        # --- Order Blocks ---
+        $inside_ob[$i],
+        sprintf("%.4f", $distance_ob[$i]),
+        $ob_type[$i],
+        $bars_since_ob[$i],
+        # --- Último HH/LL confirmado ---
+        sprintf("%.4f", $distance_hh),
+        sprintf("%.4f", $distance_ll),
+        # --- Fibonacci ---
+        $nearest_fib_level[$i],
+        # --- Niveles MTF ---
+        sprintf("%.4f", $distance_daily_high[$i]),
+        sprintf("%.4f", $distance_daily_low[$i]),
+        sprintf("%.4f", $distance_weekly_high[$i]),
+        sprintf("%.4f", $distance_weekly_low[$i]),
+        sprintf("%.4f", $distance_monthly_high[$i]),
+        sprintf("%.4f", $distance_monthly_low[$i]),
+        # --- Liquidez y swings menores ---
+        sprintf("%.4f", $distance_bsl[$i]),
+        sprintf("%.4f", $distance_ssl[$i]),
+        $lq_event[$i],
+        $bars_since_lq_event[$i],
+        $is_sh[$i],
+        $is_sl[$i],
+        sprintf("%.4f", $distance_sh[$i]),
+        sprintf("%.4f", $distance_sl[$i]),
+        # --- Tendencia interna multi-temporalidad ---
+        $trend_int_15min->[$i],
+        $trend_int_30min->[$i],
+        $trend_int_1hr->[$i],
+        $trend_int_2hr->[$i],
+        $trend_int_4hr->[$i],
+        # --- HalfTrend ---
+        $half_trend[$i],
+        sprintf("%.4f", $distance_high_half_trend[$i]),
+        sprintf("%.4f", $distance_low_half_trend[$i]),
+        # --- SuperTrend ---
+        $super_trend[$i],
+        sprintf("%.4f", $distance_high_super_trend[$i]),
+        sprintf("%.4f", $distance_low_super_trend[$i]),
+        # --- Range Filter ---
+        $range_filter[$i],
+        sprintf("%.4f", $distance_high_range_filter[$i]),
+        sprintf("%.4f", $distance_low_range_filter[$i]),
+        # --- VWAP Anclado ---
+        sprintf("%.4f", $session_vwap_distance->[$i]),
+        sprintf("%.4f", $open_vwap_distance->[$i]),
+        sprintf("%.4f", $bos_vwap_distance->[$i]),
+        sprintf("%.4f", $choch_vwap_distance->[$i]),
+        sprintf("%.4f", $pivot_vwap_distance->[$i])
+    ]);
+}
+close $fh_out;
+
+print "Proceso finalizado con guardado múltiple de pivotes. Output en $output_file.\n";
