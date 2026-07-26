@@ -129,6 +129,8 @@ package TSNE {
               ($is_greater * (nd->ones([$n_samples, 1], dtype => 'float64') - $mask_max_init) * $b_greater_not_init) +
               ($is_less * $mask_min_init * $b_less_min_init) +
               ($is_less * (nd->ones([$n_samples, 1], dtype => 'float64') - $mask_min_init) * $b_less_not_init);
+              # ---> PARCHE ANTI-OOM: Vaciar grafo en la búsqueda binaria <---
+      nd->waitall();
     }
     
     $self->{beta_train_} = $beta if ref($self) eq 'TSNE';
@@ -219,6 +221,10 @@ package TSNE {
       $grad  *= $gains; 
       $update = ($momentum * $update) - ($learning_rate * $grad);
       $p     += $update; 
+
+      # ---> PARCHE ANTI-OOM <---
+      # Obliga a MXNet a ejecutar los cálculos y vaciar la RAM
+      nd->waitall();
       
       if ($check_convergence) {
         if ($verbose && $verbose >= 2) {

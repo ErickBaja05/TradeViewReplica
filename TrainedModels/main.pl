@@ -7,9 +7,9 @@ use Text::CSV;
 
 # Importar tus librerías locales
 use sml;
-use lib '/home/alesky/Proyecto/TradeViewReplica/TrainedModels';
+use lib '/home/erick/Documents/TradeViewReplica/TrainedModels';
 use TSNE; # Asegúrate de que TSNE.pm esté en el mismo directorio
-require '/home/alesky/Proyecto/TradeViewReplica/TrainedModels/GMM.pl';
+require '/home/erick/Documents/TradeViewReplica/TrainedModels/GMM.pl';
 
 $| = 1;
 
@@ -80,8 +80,8 @@ sub exportar_fase1 {
 # FLUJO PRINCIPAL
 # =========================================================================
 
-my $train_file = '/home/alesky/Proyecto/TradeViewReplica/training.csv'; 
-my $test_file  = '/home/alesky/Proyecto/TradeViewReplica/test.csv'; 
+my $train_file = '/home/erick/Documents/TradeViewReplica/training.csv'; 
+my $test_file  = '/home/erick/Documents/TradeViewReplica/test.csv'; 
 
 print "[1/6] Cargando archivos fuente...\n";
 my $train_hash = load_dataset($train_file);
@@ -133,20 +133,17 @@ my %test_col_idx;
 my $num_test_rows = $X_test_full->shape->[0];
 my $num_pruned_cols = scalar(@$pruned_names);
 
-# Inicializamos el tensor de test vacío pero con la forma exacta del train
-my $X_test = nd->zeros([$num_test_rows, $num_pruned_cols], dtype => 'float32');
-
-# Extraemos solo las columnas que sobrevivieron a la poda en entrenamiento
-for my $i (0 .. $num_pruned_cols - 1) {
-    my $col_name = $pruned_names->[$i];
+# Extracción vectorizada de un solo golpe (¡Adiós al problema del slice!)
+my @keep_idx_in_test;
+for my $col_name (@$pruned_names) {
     if (exists $test_col_idx{$col_name}) {
-        my $idx = $test_col_idx{$col_name};
-        # Asignación de tensores en MXNet (slice)
-        $X_test->slice(':', [$i, $i]) .= $X_test_full->slice(':', [$idx, $idx]);
+        push @keep_idx_in_test, $test_col_idx{$col_name};
     } else {
         die "Error fatal: La columna '$col_name' requerida por GMM no existe en test.csv\n";
     }
 }
+# nd->take extrae todas las columnas correctas simultáneamente
+my $X_test = nd->take($X_test_full, nd->array(\@keep_idx_in_test), axis => 1);
 printf "      -> Matriz de test alineada: %d filas x %d columnas\n\n", $X_test->shape->[0], $X_test->shape->[1];
 
 print "      -> Estandarizando (Z-score) características...\n";
@@ -191,7 +188,7 @@ my $tsne = TSNE->new(
 my $total_train = $X_train->shape->[0];
 
 # Sample size se debe cambiar a un valor adecuado (por ejemplo 15000)
-my $sample_size = 500; 
+my $sample_size = 10000; 
 $sample_size = $total_train if $sample_size > $total_train;
 
 print "      -> Calibrando espacio t-SNE en submuestra de Train ($sample_size filas)...\n";
@@ -235,14 +232,13 @@ printf "      -> GMM encontró K = %d regímenes óptimos.\n", $best_k;
 # Extracción para Train
 my $train_clusters = nd->argmax($best_model->{resp}, axis => 1);
 
+
 # Inferencia para Test
 my $test_clusters;
-if ($best_model->can('predict')) {
-    $test_clusters = $best_model->predict($X_test_tsne);
-} elsif (sml->can('gmm_predict')) {
+if (sml->can('gmm_predict')) {
     $test_clusters = sml->gmm_predict($best_model, $X_test_tsne);
 } else {
-    warn "ADVERTENCIA: No se encontró método predict() en GMM. Asignando ceros temporalmente a Test.\n";
+    warn "ADVERTENCIA: No se encontró método gmm_predict(). Asignando ceros temporalmente a Test.\n";
     $test_clusters = nd->zeros([$X_test_tsne->shape->[0]], dtype => 'int32');
 }
 print "\n";

@@ -288,6 +288,9 @@ sub fit_diag {
     my $lower;
     ($resp, $lower) = sml->e_step_diag($X, $means, $vars, $weights);
 
+    # Forzar evaluación antes del asscalar
+    nd->waitall();
+    
     # Este es el único asscalar estrictamente necesario para romper el bucle en Perl.
     my $lower_scalar = $lower->asscalar;
     push @history, $lower_scalar;
@@ -512,6 +515,9 @@ sub fit {
     ($means, $covs, $weights) = sml->m_step($X, $resp);
     my $lower;
     ($resp, $lower) = sml->e_step($X, $means, $covs, $weights);
+
+    # Forzar evaluación antes del asscalar
+    nd->waitall();
 
     my $lower_scalar = $lower->asscalar;
     push @history, $lower_scalar;
