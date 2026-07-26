@@ -3,13 +3,14 @@ use strict;
 use warnings;
 use Data::Dump qw(dump);
 use AI::MXNet qw(mx nd);
-use Text::CSV; 
+use Text::CSV;
+use FindBin qw($Bin);
 
 # Importar tus librerías locales
 use sml;
-use lib '/home/erick/Documents/TradeViewReplica/TrainedModels';
+use lib $Bin;
 use TSNE; # Asegúrate de que TSNE.pm esté en el mismo directorio
-require '/home/erick/Documents/TradeViewReplica/TrainedModels/GMM.pl';
+require "$Bin/GMM.pl";
 
 $| = 1;
 
@@ -80,8 +81,14 @@ sub exportar_fase1 {
 # FLUJO PRINCIPAL
 # =========================================================================
 
-my $train_file = '/home/erick/Documents/TradeViewReplica/training.csv'; 
-my $test_file  = '/home/erick/Documents/TradeViewReplica/test.csv'; 
+# $Bin apunta automáticamente a:
+# TradeViewReplica/TrainedModels
+#
+# Por eso "$Bin/.." corresponde a:
+# TradeViewReplica
+
+my $train_file = "$Bin/../training.csv";
+my $test_file  = "$Bin/../test.csv";
 
 print "[1/6] Cargando archivos fuente...\n";
 my $train_hash = load_dataset($train_file);
@@ -253,6 +260,3 @@ exportar_fase1('test_fase1.csv',  $X_test_tsne,  $test_clusters,  $test_hash);
 print "\n=======================================================\n";
 print "PIPELINE FASE 1 COMPLETADO EXITOSAMENTE\n";
 print "=======================================================\n";
-
-
-
