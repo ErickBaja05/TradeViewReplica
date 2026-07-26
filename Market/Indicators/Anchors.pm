@@ -50,6 +50,14 @@ sub reset {
     # Estado del Ghost VWAP (Pivote Fantasma / Missed)
     $self->{live_ghost}      = undef;
     $self->{ghost_vwap}      = undef;
+
+    # Cache incremental de _update_live_ghost: evita re-escanear
+    # [px1+1 .. i] entero en cada vela (ver comentario en el método).
+    $self->{lg_anchor_px1}  = undef;
+    $self->{lg_anchor_os}   = undef;
+    $self->{lg_last_index}  = undef;
+    $self->{lg_best_price}  = undef;
+    $self->{lg_best_idx}    = undef;
     $self->{gv_anchor_index} = undef;
     $self->{gv_last_index}   = undef;
     $self->{gv_cum_vol}      = 0.0;
@@ -244,17 +252,58 @@ sub _update_live_ghost {
 
     return if $i <= $px1;
 
+    # El "pivote fantasma vivo" es el mejor low/high visto desde el último
+    # pivote confirmado ($px1). Antes esto re-escaneaba [px1+1 .. i] entero
+    # en CADA vela -> O(rango) por vela, O(rango^2) acumulado entre dos
+    # pivotes confirmados (con length=50 el rango puede ser de cientos de
+    # velas). Ahora se mantiene el mejor valor en caché y sólo se
+    # reconstruye desde cero cuando cambia el ancla (px1/os) o cuando la
+    # secuencia no es contigua (saltos de Modo Replay / reset), igual que
+    # ya hacen _update_ghost_vwap y _update_regular_vwap.
+    my $same_anchor = defined $self->{lg_anchor_px1}
+        && $self->{lg_anchor_px1} == $px1
+        && defined $self->{lg_anchor_os}
+        && $self->{lg_anchor_os} == $os;
+    my $contiguous = defined $self->{lg_last_index}
+        && $self->{lg_last_index} == $i - 1;
+
     my ($best_price, $best_idx);
-    for my $j (($px1 + 1) .. $i) {
-        my $bar = $candles->[$j];
-        next unless $bar;
-        my $val = ($os == 1) ? $bar->{low} : $bar->{high};
-        if (!defined $best_price
-            || ($os == 1 ? ($val < $best_price) : ($val > $best_price))) {
-            $best_price = $val;
-            $best_idx   = $j;
+
+    if ($same_anchor && $contiguous) {
+        # Caso común: sólo comparar la vela nueva contra el mejor ya visto.
+        $best_price = $self->{lg_best_price};
+        $best_idx   = $self->{lg_best_idx};
+
+        my $bar = $candles->[$i];
+        if ($bar) {
+            my $val = ($os == 1) ? $bar->{low} : $bar->{high};
+            if (!defined $best_price
+                || ($os == 1 ? ($val < $best_price) : ($val > $best_price))) {
+                $best_price = $val;
+                $best_idx   = $i;
+            }
         }
     }
+    else {
+        # Ancla nueva o secuencia discontinua: reconstruir una sola vez.
+        for my $j (($px1 + 1) .. $i) {
+            my $bar = $candles->[$j];
+            next unless $bar;
+            my $val = ($os == 1) ? $bar->{low} : $bar->{high};
+            if (!defined $best_price
+                || ($os == 1 ? ($val < $best_price) : ($val > $best_price))) {
+                $best_price = $val;
+                $best_idx   = $j;
+            }
+        }
+    }
+
+    $self->{lg_anchor_px1} = $px1;
+    $self->{lg_anchor_os}  = $os;
+    $self->{lg_last_index} = $i;
+    $self->{lg_best_price} = $best_price;
+    $self->{lg_best_idx}   = $best_idx;
+
     return unless defined $best_price;
 
     $self->{live_ghost} = { index => $best_idx, price => $best_price, dir => $os };

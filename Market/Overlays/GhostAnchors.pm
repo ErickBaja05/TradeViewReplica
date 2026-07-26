@@ -102,6 +102,37 @@ sub draw {
             );
         }
     }
+
+    # Pivote fantasma "vivo" (temporal): el marcador 👻 en formación que
+    # avanza y cambia de lado vela a vela mientras no se confirma un nuevo
+    # pivote regular. Equivale al bloque `barstate.islast` del Pine original
+    # y es lo que produce el efecto de "pivotes temporales / pivot switching"
+    # durante el Modo Replay. Antes esta capa sólo dibujaba `markers`
+    # (pivotes ya confirmados) e ignoraba `live_ghost`.
+    my $live_ghost = $self->{result}->{live_ghost};
+    if ($live_ghost && defined $live_ghost->{index}
+        && $live_ghost->{index} >= $start && $live_ghost->{index} <= $end) {
+
+        my $x = $scale->index_to_center_x($live_ghost->{index});
+        my $y = $scale->value_to_y($live_ghost->{price});
+
+        if (defined $x && defined $y && $x <= $right_limit) {
+            # dir/os: 1 = el motor busca un pivote LOW (recorre el mínimo),
+            # 0 = busca un pivote HIGH (recorre el máximo). Ver
+            # Anchors::_update_live_ghost: val = os==1 ? low : high.
+            my $is_high = ($live_ghost->{dir} // 0) == 0;
+            my $color   = $is_high ? $self->{color_high} : $self->{color_low};
+            my $dy      = $is_high ? -13 : 13;
+
+            $canvas->createText(
+                $x, $y + $dy,
+                -text   => "\x{1F47B}",
+                -fill   => $color,
+                -font   => ['Arial', 9, 'normal'],
+                -anchor => 'center',
+            );
+        }
+    }
 }
 
 1;
