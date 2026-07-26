@@ -162,7 +162,6 @@ sub viterbi_tensors {
     die "HMM sin matriz de emisiones B\n"  unless defined $self->{emissions};
     die "HMM sin vector inicial pi\n"      unless defined $self->{start};
 
-    # Permite pasar ARRAY ref o NDArray.
     $O = nd->array($O) if ref($O) eq 'ARRAY';
 
     my $A  = $self->{transitions};
@@ -182,58 +181,55 @@ sub viterbi_tensors {
     my $D = nd->zeros([$I, $N]);
     my $E = $N > 1 ? nd->zeros([$I, $N - 1]) : nd->zeros([$I, 0]);
 
-    # Inicializacion: D[:,0] = pi (*) B[:,O[0]]
-    my $obs = int($O->slice(0)->asscalar);
+    # OPTIMIZACIÓN 1: Extraemos las observaciones a un arreglo nativo de Perl
+    my $O_arr = $O->asarray;
+    
+    my $obs = int($O_arr->[0]);
     my $b0  = $B->slice(':', $obs);
 
     if ($use_log) {
         $D->slice(':', 0)->set(($pi + $b0)->expand_dims(axis => 1));
-    }
-    else {
+    } else {
         $D->slice(':', 0)->set(($pi * $b0)->expand_dims(axis => 1));
     }
 
-    # Recursion tensorial.
     for my $n (1 .. $N - 1) {
-        $obs = int($O->slice($n)->asscalar);
+        $obs = int($O_arr->[$n]); # Acceso nativo instantáneo
 
-        # [I] -> [I,1]; al combinar con A[I,I], MXNet hace broadcasting.
         my $prev = $D->slice(':', $n - 1)->expand_dims(axis => 1);
         my $temp = $use_log ? ($prev + $A) : ($prev * $A);
 
-        # Para cada estado destino j, elegimos el mejor estado origen i.
         my $max_vals = $temp->max(axis => 0);
         my $argmaxes = $temp->argmax(axis => 0);
         my $emit     = $B->slice(':', $obs);
 
         if ($use_log) {
             $D->slice(':', $n)->set(($max_vals + $emit)->expand_dims(axis => 1));
-        }
-        else {
+        } else {
             $D->slice(':', $n)->set(($max_vals * $emit)->expand_dims(axis => 1));
         }
-
         $E->slice(':', $n - 1)->set($argmaxes->expand_dims(axis => 1));
+        
+        # Parche de seguridad para la memoria RAM
+        nd->waitall() if $n % 5000 == 0;
     }
 
-    # Backtracking.
-    my $S_opt = nd->zeros([$N]);
-    $S_opt->slice($N - 1)->set(
-        $D->slice(':', $N - 1)->argmax->asscalar
-    );
+    # OPTIMIZACIÓN 2: Backtracking usando arreglos nativos
+    my $E_arr = $E->asarray;
+    my @S_opt_arr;
+    
+    # Aseguramos el último nodo
+    $S_opt_arr[$N - 1] = int($D->slice(':', $N - 1)->argmax->asscalar);
 
+    # Reconstrucción de la ruta en milisegundos
     for (my $n = $N - 2; $n >= 0; $n--) {
-        my $next_state = int($S_opt->slice($n + 1)->asscalar);
-        $S_opt->slice($n)->set(
-            $E->slice($next_state, $n)->asscalar
-        );
+        my $next_state = $S_opt_arr[$n + 1];
+        $S_opt_arr[$n] = int($E_arr->[$next_state][$n]);
     }
 
-    # Si se trabajo en log, D se devuelve nuevamente en escala probabilistica
-    # solo por compatibilidad con el ejercicio. S_opt y E no cambian.
-    return $use_log
-        ? ($S_opt, nd->exp($D), $E)
-        : ($S_opt, $D, $E);
+    my $S_opt = nd->array(\@S_opt_arr);
+
+    return $use_log ? ($S_opt, nd->exp($D), $E) : ($S_opt, $D, $E);
 }
 
 # Alias por compatibilidad con codigo que llame simplemente viterbi().
