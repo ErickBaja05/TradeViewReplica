@@ -120,6 +120,8 @@ my $trainer = mx->gluon->Trainer($net->collect_params(), optimizer => 'adam', op
 my $num_epochs = 20; 
 print "Iniciando entrenamiento por $num_epochs épocas...\n";
 for (my $epoch = 0; $epoch < $num_epochs; $epoch++){
+  my $inicio_epoca = time();
+  
   while ( my $batch = <$train_iter> ) {
     my ($X, $y) = @$batch;
     my $l;
@@ -130,7 +132,12 @@ for (my $epoch = 0; $epoch < $num_epochs; $epoch++){
     $l->backward();
     $trainer->step($X->len);
   }
-  print "Época " . ($epoch + 1) . " completada.\n";
+  
+  # Parche de seguridad para vaciar la RAM al final de cada ciclo
+  nd->waitall(); 
+  
+  my $tiempo_epoca = time() - $inicio_epoca;
+  print "Época " . ($epoch + 1) . " completada en $tiempo_epoca segundos.\n";
 }
 
 # 8. GUARDADO DEL MODELO

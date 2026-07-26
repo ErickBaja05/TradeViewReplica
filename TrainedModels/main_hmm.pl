@@ -14,7 +14,7 @@ sub procesar_archivo {
     my ($archivo_entrada, $archivo_salida, $modelo_hmm, $es_entrenamiento) = @_;
     print "-> Leyendo $archivo_entrada...\n";
     
-    my $csv = Text::CSV->new({ binary => 1, auto_diag => 1 });
+    my $csv = Text::CSV->new({ binary => 1, auto_diag => 1, eol => "\n" });
     open my $fh_in, "<:encoding(utf8)", $archivo_entrada or die $!;
     
     my $header = $csv->getline($fh_in);
