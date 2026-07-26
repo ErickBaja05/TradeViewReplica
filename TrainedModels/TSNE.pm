@@ -402,15 +402,15 @@ package TSNE {
   # }
 sub transform {
     my ($self, $X_new, $batch_size) = @_;
-    $batch_size //= 1000; # Lote de 1000 filas por defecto para evitar MemoryError
+    $batch_size //= 1000; 
 
-    die "El modelo no tiene las betas del entrenamiento original guardadas.\n"
-        unless defined $self->{beta_train_};
+    die "Error: El modelo no tiene el embedding original guardado.\n"
+        unless defined $self->{embedding_};
 
     $X_new = $X_new->astype('float64');
     my $n_new = $X_new->shape->[0];
 
-    # Si el dataset es gigante, lo procesamos recursivamente por lotes
+    # Procesamiento recursivo por lotes para no explotar la memoria RAM
     if ($n_new > $batch_size) {
         my @embedded_chunks;
         
@@ -421,57 +421,39 @@ sub transform {
             my $chunk = $X_new->slice([$start, $end]);
             
             if ($self->{verbose}) {
-                printf "[t-SNE] Proyectando lote de filas [%d - %d] de %d...\n", $start, $end, $n_new;
+                printf "[t-SNE] Aproximando lote [%d - %d] vía K-Nearest Neighbors...\n", $start, $end;
             }
             
-            # Pasamos un $batch_size mayor a n_new para forzar la lógica original
             push @embedded_chunks, $self->transform($chunk, $n_new + 1);
         }
         
-        # Ensambla y retorna todos los lotes calculados
         return nd->concat(@embedded_chunks, dim => 0);
     }
 
     # =========================================================================
-    # LÓGICA ORIGINAL (Ejecutada internamente para 1 solo lote a la vez)
+    # BYPASS DE EMERGENCIA: APROXIMACIÓN VÍA KNN
     # =========================================================================
     my $X_train = $self->{X_train_backup};
-    my $n_train = $X_train->shape->[0];
     
+    # 1. Calculamos las distancias de este lote contra los 10,000 de calibración
     my $X_new_sum   = nd->sum(nd->square($X_new), axis => 1, keepdims => 1);
     my $X_train_sum = nd->sum(nd->square($X_train), axis => 1, keepdims => 1);
     my $cross_prod  = nd->dot($X_new, $X_train->T);
     my $sqdist_new  = $X_new_sum - (2 * $cross_prod) + $X_train_sum->T;
     $sqdist_new     = nd->maximum_scalar($sqdist_new, 0.0);
 
+    # 2. Buscamos los 5 vecinos más cercanos
     my $k_neighbors = 5; 
     my $top_k_indices = nd->topk($sqdist_new, k => $k_neighbors, axis => 1, is_ascend => 1);
 
-    my $gathered_betas   = nd->take($self->{beta_train_}->squeeze, $top_k_indices);
-    my $precomputed_beta = nd->mean($gathered_betas, axis => 1, keepdims => 1);
+    # 3. Extraemos las coordenadas t-SNE de esos 5 vecinos y las promediamos
+    my $flat_indices = $top_k_indices->reshape([-1]);
+    my $gathered_coords = nd->take($self->{embedding_}, $flat_indices);
+    my $reshaped_coords = $gathered_coords->reshape([$n_new, $k_neighbors, 2]);
 
-    my $P_new = $self->_binary_search_perplexity_mxnet($sqdist_new, undef, 0, $precomputed_beta);
+    my $result = nd->mean($reshaped_coords, axis => 1);
     
-    my $init_new = nd->dot($P_new, $self->{embedding_}); 
-    
-    my $X_combined = nd->concat($X_train, $X_new, dim => 0);
-    my $old_init = $self->{init};
-    $self->{init} = nd->concat($self->{embedding_}, $init_new, dim => 0);
-    
-    # Apagamos temporalmente verbose para evitar inundar la consola por cada lote
-    my $old_verbose = $self->{verbose};
-    $self->{verbose} = 0;
-    
-    my $embedded_combined = $self->_fit($X_combined, skip_num_points => $n_train);
-    
-    # Restauramos valores
-    $self->{verbose} = $old_verbose;
-    $self->{init} = $old_init;
-    
-    my @idx = ($n_train) .. ($n_train + $n_new - 1);
-    my $result = nd->take($embedded_combined, nd->array(\@idx, dtype => 'int32'), axis => 0);
-    
-    return $result;
-  }
+    return $result->astype('float32');
+}
   1;
 }
