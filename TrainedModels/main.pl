@@ -89,7 +89,7 @@ my $test_hash  = load_dataset($test_file);
 print "\n";
 
 # Cambia $MODO_PRUEBA a 0 para ejecutar el pipeline con TODOS los datos.
-my $MODO_PRUEBA = 1; 
+my $MODO_PRUEBA = 0; 
 my $FILAS_PRUEBA = 500; # sino mi pc explota jajaja 
 
 if ($MODO_PRUEBA) {
