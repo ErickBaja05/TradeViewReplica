@@ -14,7 +14,7 @@ use Market::Indicators::ATR;
 # =========================================================================
 
 # CAMBIAR ARCHIVO DE DATOS AQUI
-my $filepath = '2026_07_13.csv';
+my $filepath = 'datos.csv';
 
 my $mw = MainWindow->new();
 $mw->title("Replica Financiera TradingView - EPN");
