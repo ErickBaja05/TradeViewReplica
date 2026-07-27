@@ -410,18 +410,19 @@ sub transform {
     $X_new = $X_new->astype('float64');
     my $n_new = $X_new->shape->[0];
 
-    # Procesamiento recursivo por lotes para no explotar la memoria RAM
+   # Procesamiento recursivo por lotes para no explotar la memoria RAM
     if ($n_new > $batch_size) {
         my @embedded_chunks;
         
         for (my $start = 0; $start < $n_new; $start += $batch_size) {
-            my $end = $start + $batch_size - 1;
-            $end = $n_new - 1 if $end >= $n_new;
+            # CORRECCIÓN: slice() excluye el límite superior, ya no restamos 1
+            my $end = $start + $batch_size;
+            $end = $n_new if $end > $n_new;
             
             my $chunk = $X_new->slice([$start, $end]);
             
             if ($self->{verbose}) {
-                printf "[t-SNE] Aproximando lote [%d - %d] vía K-Nearest Neighbors...\n", $start, $end;
+                printf "[t-SNE] Aproximando lote [%d - %d] vía K-Nearest Neighbors...\n", $start, $end - 1;
             }
             
             push @embedded_chunks, $self->transform($chunk, $n_new + 1);

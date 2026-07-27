@@ -57,8 +57,8 @@ print "--- INICIANDO FASE 2: HMM VITERBI ---\n";
 my $hmm = Market::ML::HMM->new(num_states => 3, smoothing => 1.0, emission_accuracy => 0.85);
 
 # 2. Ajuste de ruta: Leemos los archivos fase 1 desde TrainedModels y los guardamos en la raíz
-procesar_archivo('/home/erick/Documents/TradeViewReplica/TrainedModels/train_fase1.csv', '/home/erick/Documents/TradeViewReplica/train_listo_para_lstm.csv', $hmm, 1);
-procesar_archivo('/home/erick/Documents/TradeViewReplica/TrainedModels/test_fase1.csv', '/home/erick/Documents/TradeViewReplica/test_listo_para_lstm.csv', $hmm, 0);
+procesar_archivo('/home/erick/Documents/TradeViewReplica/train_fase1.csv', '/home/erick/Documents/TradeViewReplica/train_listo_para_lstm.csv', $hmm, 1);
+procesar_archivo('/home/erick/Documents/TradeViewReplica/test_fase1.csv', '/home/erick/Documents/TradeViewReplica/test_listo_para_lstm.csv', $hmm, 0);
 
 print "=======================================================\n";
 print "¡TODOS LOS DATOS ESTÁN LISTOS PARA LA RED NEURONAL!\n";
