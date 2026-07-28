@@ -5,6 +5,50 @@ use warnings;
 
 use Market::Panels::PricePanel;
 use Market::Panels::ATRPanel;
+use Market::Indicators::Liquidity;
+use Market::Indicators::SMC_Structures;
+use Market::Indicators::FVG;
+use Market::Indicators::Structure;
+use Market::Indicators::Supertrend;
+use Market::Indicators::HalfTrend;
+use Market::Indicators::RangeFilter;
+use Market::Indicators::TrendChannel;
+use Market::Indicators::OrderBlocks;
+use Market::Indicators::VWAPAnchored;
+use Market::Indicators::VolumeProfileAnchored;
+use Market::Indicators::Fibonacci;
+use Market::Indicators::Levels;
+use Market::Indicators::ZigzagInternal;
+use Market::Indicators::Anchors;
+use Market::Indicators::MultiAnchoredVWAP;
+
+use Market::Overlays::Zigzag_External;
+use Market::Overlays::Zigzag_Internal;
+use Market::Overlays::Swing;
+use Market::Overlays::FVG;
+use Market::Overlays::BOS_External;
+use Market::Overlays::BOS_Internal;
+use Market::Overlays::ChoCH_External;
+use Market::Overlays::ChoCH_Internal;
+use Market::Overlays::EQH;
+use Market::Overlays::EQL;
+use Market::Overlays::Liquidity;
+use Market::Overlays::Supertrend;
+use Market::Overlays::HalfTrend;
+use Market::Overlays::RangeFilter;
+use Market::Overlays::TrendChannel;
+use Market::Overlays::OrderBlocks;
+use Market::Overlays::VWAPAnchored;
+use Market::Overlays::VolumeProfileAnchored;
+use Market::Overlays::Fibonacci;
+use Market::Overlays::Levels;
+use Market::Overlays::GhostAnchors;
+use Market::Overlays::GhostLines;
+use Market::Overlays::GhostVWAP;
+use Market::Overlays::MultiAnchoredVWAP;
+
+use Market::Indicators::Channel;
+use Market::Overlays::Channel;
 
 =head1 NOMBRE
 Market::ChartEngine - Motor gráfico central y orquestador de la interfaz.
@@ -37,10 +81,201 @@ sub new {
         manual_y_max      => 100,    
         manual_y_min      => 0,      
 
+        # Mostrar/ocultar la línea + etiqueta del último precio visible
+        show_last_price   => 1,
+
+        # --- Modo Replay ---
+        # replay_mode: 1 mientras el Modo Replay está activo (ya se eligió
+        # la vela de partida y sólo se muestra el historial hasta ahí).
+        # replay_selection_mode: 1 mientras se espera el click del usuario
+        # sobre la vela que marcará el punto de partida del Replay.
+        replay_mode            => 0,
+        replay_selection_mode  => 0,
+        replay_playback_active => 0,      # 1 cuando está reproduciendo automáticamente
+        replay_playback_after_id => undef, # ID del after() para cancelar programación
+        replay_speed => 1.0,              # Velocidad en velas/segundo (0.2 a 5.0)
+
         # Estado de Escalas ATR (Volatilidad)
         atr_auto_scale    => 1,
         atr_manual_y_max  => 10,
         atr_manual_y_min  => 0,
+
+        # --- Funcionalidad de Liquidez y SMC (Smart Money Concepts) ---
+        show_zigzag_ext   => 0,
+        show_zigzag_int   => 0,
+        # Temporalidad "Multi Time Frame" usada por el Zigzag Interno,
+        # independiente de la temporalidad activa del gráfico (igual que el
+        # input "ZigZag Resolution" del indicador PineScript de referencia).
+        zigzag_internal_tf   => '1h',
+        zigzag_internal_cache_key => undef,
+        show_swing   => 0,
+        show_bos_ext      => 0,
+        show_bos_int      => 0,
+        show_choch_ext    => 0,
+        show_choch_int    => 0,
+        show_eqh          => 0,
+        show_eql          => 0,
+        show_fibonacci    => 0,
+        show_levels       => 0,
+
+        show_bsl          => 0,
+        show_ssl          => 0,
+        show_lq_sweep     => 0,
+        show_lq_grab      => 0,
+        show_lq_run       => 0,
+        show_supertrend   => 0,
+        show_halftrend    => 0,
+        show_range_filter => 0,
+        show_fvg          => 0,
+        show_orderblocks  => 0,
+        show_trendchannel => 0,
+        # Añade esto en el hash $self del sub new:
+        last_processed_index => -1,
+        smc_cache_key        => undef,
+
+        # --- Anchors (sección Volume): motor único (Market::Indicators::Anchors)
+        #     repartido en tres overlays independientes con su propio botón
+        #     en el menú "Anchored Indicators" ---
+        show_ghost_anchors => 0,   # "Ghost Anchors": marcadores de pivotes (regulares + fantasma)
+        show_ghost_lines   => 0,   # "Ghost Lines": zigzag + rastro horizontal ("ghost level")
+        show_ghost_vwap    => 0,   # "Ghost VWAP": VWAP anclado desde el pivote fantasma vivo
+        ghost_vwap_sigma_range => 1,   # cuántas bandas de sigma dibuja Ghost VWAP (1, 2 o 3)
+
+        # --- Multi Anchored VWAP: un VWAP Anclado (con bandas) por cada
+        #     pivote detectado por el motor de Anchors, en lugar de un único
+        #     ancla elegida manualmente con click ---
+        show_multi_vwap         => 0,
+        multi_vwap_sigma_range  => 1,   # cuántas bandas de sigma se dibujan (1, 2 o 3)
+
+        # --- VWAP Anclado (Anchored VWAP + banda de 2 sigma) ---
+        show_vwap_anchored         => 0,
+        vwap_anchor_index          => undef,
+        # Modo de anclaje: 'session_start' (inicio de sesión / primera vela),
+        # 'session_open' (apertura: primera vela de la última apertura de
+        # mercado), 'bos_confirmed' (último BOS externo cerrado),
+        # 'choch_confirmed' (último CHoCH externo cerrado) o 'pivot' (elegir
+        # pivote: selección manual por click, lógica clásica). Por defecto
+        # "inicio de sesión".
+        vwap_anchor_mode           => 'session_start',
+        vwap_anchor_selection_mode => 0,   # 1 mientras se espera el click sobre la vela de ancla
+        vwap_cache_key             => undef,
+        vwap_sigma_range           => 1,   # cuántas bandas de sigma se dibujan (1, 2 o 3)
+
+        # --- Volume Profile Anclado (histograma de volumen por precio con
+        #     zona de valor de 1 sigma) ---
+        show_volume_profile_anchored         => 0,
+        volume_profile_anchor_index          => undef,
+        # Mismo esquema de modos de anclaje que el VWAP Anclado (ver
+        # vwap_anchor_mode más arriba). Por defecto "inicio de sesión".
+        volume_profile_anchor_mode           => 'session_start',
+        volume_profile_anchor_selection_mode => 0, # 1 mientras se espera el click sobre la vela de ancla
+        volume_profile_cache_key             => undef,
+        volume_profile_sigma_range           => 1,   # cuántos rangos de sigma (líneas VAH/VAL) se dibujan (1, 2 o 3)
+
+        liquidity_engine  => Market::Indicators::Liquidity->new(),
+        # Estructura EXTERNA (BOS/CHoCH externos), calculada sobre los
+        # pivotes estructurales (tier "structural").
+        smc_engine        => Market::Indicators::SMC_Structures->new(
+            choch_atr_mult => 2.0,
+        ),
+        # Estructura INTERNA (BOS/CHoCH internos), calculada sobre los
+        # pivotes "minor" (swing points de menor grado). Usa un múltiplo de
+        # ATR menor para que el CHoCH interno sea alcanzable a esa escala.
+        smc_internal_engine => Market::Indicators::SMC_Structures->new(
+            choch_atr_mult => 0.5,
+        ),
+        fvg_engine       => Market::Indicators::FVG->new(),
+        structure_engine  => Market::Indicators::Structure->new(),
+        # Niveles de Fibonacci calculados sobre la altura del último tramo
+        # (leg) del ZigZag Externo (smc_engine).
+        fibonacci_engine  => Market::Indicators::Fibonacci->new(),
+        # Niveles de Soporte/Resistencia calculados sobre los mismos
+        # pivotes estructurales del ZigZag Externo (smc_engine).
+        levels_engine     => Market::Indicators::Levels->new(
+            max_levels => 6,
+        ),
+        supertrend_engine => Market::Indicators::Supertrend->new(
+            period     => 10,
+            multiplier => 3.0,
+            change_atr => 1,
+        ),
+        halftrend_engine  => Market::Indicators::HalfTrend->new(
+            amplitude         => 2,
+            channel_deviation => 2,
+            atr_period        => 100,
+        ),
+        range_filter_engine => Market::Indicators::RangeFilter->new(
+            period     => 100,
+            multiplier => 3.0,
+        ),
+        orderblocks_engine => Market::Indicators::OrderBlocks->new(),
+        trendchannel_engine => Market::Indicators::TrendChannel->new(
+            length    => 100,
+            deviation => 2,
+        ),
+        vwap_anchored_engine => Market::Indicators::VWAPAnchored->new(
+            std_mult => 3,
+        ),
+        volume_profile_num_bins => 24,
+        volume_profile_anchored_engine => Market::Indicators::VolumeProfileAnchored->new(
+            num_bins => 24,
+        ),
+        # ZigZag Interno (Internal Structure) — Multi Time Frame, réplica de
+        # zzmtf.txt.
+        zigzag_internal_engine   => Market::Indicators::ZigzagInternal->new(
+            period => 2,
+        ),
+        anchors_engine           => Market::Indicators::Anchors->new(
+            length => 50,
+        ),
+        multi_vwap_engine        => Market::Indicators::MultiAnchoredVWAP->new(
+            std_mult    => 1,
+            max_anchors => 20,
+        ),
+        zigzag_ext_overlay       => Market::Overlays::Zigzag_External->new(),
+        zigzag_internal_overlay  => Market::Overlays::Zigzag_Internal->new(),
+        swing_overlay       => Market::Overlays::Swing->new(),
+        bos_ext_overlay          => Market::Overlays::BOS_External->new(),
+        bos_int_overlay          => Market::Overlays::BOS_Internal->new(),
+        choch_ext_overlay        => Market::Overlays::ChoCH_External->new(),
+        choch_int_overlay        => Market::Overlays::ChoCH_Internal->new(),
+        eqh_overlay              => Market::Overlays::EQH->new(),
+        eql_overlay              => Market::Overlays::EQL->new(),
+        fibonacci_overlay        => Market::Overlays::Fibonacci->new(),
+        levels_overlay           => Market::Overlays::Levels->new(),
+        ghost_anchors_overlay    => Market::Overlays::GhostAnchors->new(),
+        ghost_lines_overlay      => Market::Overlays::GhostLines->new(),
+        ghost_vwap_overlay       => Market::Overlays::GhostVWAP->new(
+            sigma_range => 1,
+        ),
+        multi_vwap_overlay       => Market::Overlays::MultiAnchoredVWAP->new(
+            sigma_range => 1,
+        ),
+        
+        liquidity_overlay        => Market::Overlays::Liquidity->new(),
+        supertrend_overlay       => Market::Overlays::Supertrend->new(),
+        halftrend_overlay        => Market::Overlays::HalfTrend->new(),
+        range_filter_overlay     => Market::Overlays::RangeFilter->new(),
+        fvg_overlay              => Market::Overlays::FVG->new(),
+        orderblocks_overlay      => Market::Overlays::OrderBlocks->new(),
+        trendchannel_overlay     => Market::Overlays::TrendChannel->new(),
+        vwap_anchored_overlay    => Market::Overlays::VWAPAnchored->new(
+            sigma_range => 1,
+        ),
+        volume_profile_anchored_overlay => Market::Overlays::VolumeProfileAnchored->new(
+            sigma_range => 1,
+        ),
+        # En el hash $self, dentro de new():
+        show_channel     => 0,
+        channel_engine   => Market::Indicators::Channel->new(
+            length    => 100,
+            deviation => 2.0,
+        ),
+        channel_overlay  => Market::Overlays::Channel->new(
+            up_color => '#26a69a',
+            dn_color => '#ef5350',
+            width    => 2,
+        ),
     };
 
     bless $self, $class;
@@ -118,6 +353,143 @@ sub render {
     $self->{price_panel}->render($data_slice) if $self->{price_panel};
     $self->{atr_panel}->render($data_slice)   if $self->{atr_panel};
 
+    # --- Capas de Liquidez, SMC, ChoCH, FVG y Order Blocks ---
+    # Se dibujan sobre el canvas de precios, apoyándose en la misma escala
+    # ($self->{price_panel}->{scale}) que ya fue calculada por PricePanel::render().
+    if ($self->{show_zigzag_ext} || $self->{show_zigzag_int} || $self->{show_swing}
+     || $self->{show_bos_ext} || $self->{show_bos_int}
+     || $self->{show_choch_ext} || $self->{show_choch_int}
+     || $self->{show_eqh} || $self->{show_eql}
+     || $self->{show_fibonacci}
+     || $self->{show_levels} || $self->{show_channel}
+     || $self->{show_fvg}
+     || $self->{show_bsl} || $self->{show_ssl}
+     || $self->{show_lq_sweep} || $self->{show_lq_grab} || $self->{show_lq_run}
+     || $self->{show_supertrend} || $self->{show_halftrend} || $self->{show_range_filter}
+     || $self->{show_orderblocks} || $self->{show_trendchannel}
+     || $self->{show_ghost_anchors} || $self->{show_ghost_lines} || $self->{show_ghost_vwap}
+     || $self->{show_multi_vwap}) {
+        $self->update_smc_overlay($self->{market_data}->last_index());
+        $self->update_zigzag_internal_overlay() if $self->{show_zigzag_int};
+
+        my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
+
+        if ($scale) {
+            # Las franjas (FVG/OB) se dibujan primero, para que las líneas de
+            # estructura (SMC/CHoCH/Liquidez) queden siempre visibles por encima.
+
+            # Liquidez: líneas BSL/SSL y eventos Sweep/Grab/Run
+            # Se dibuja primero (bajo las demás capas) para que las
+            # líneas de estructura queden siempre por encima.
+            if ($self->{show_bsl} || $self->{show_ssl}
+             || $self->{show_lq_sweep} || $self->{show_lq_grab} || $self->{show_lq_run}) {
+                $self->{liquidity_overlay}->{show_bsl}   = $self->{show_bsl};
+                $self->{liquidity_overlay}->{show_ssl}   = $self->{show_ssl};
+                $self->{liquidity_overlay}->{show_sweep} = $self->{show_lq_sweep};
+                $self->{liquidity_overlay}->{show_grab}  = $self->{show_lq_grab};
+                $self->{liquidity_overlay}->{show_run}   = $self->{show_lq_run};
+                $self->{liquidity_overlay}->draw($self->{price_canvas}, $scale, $start, $end);
+            }
+
+            $self->{trendchannel_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_trendchannel};
+            $self->{fvg_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_fvg};
+            
+            $self->{swing_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_swing};
+
+            $self->{zigzag_ext_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_zigzag_ext};
+
+            $self->{zigzag_internal_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_zigzag_int};
+
+            $self->{bos_ext_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_bos_ext};
+
+            $self->{bos_int_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_bos_int};
+
+            $self->{choch_ext_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_choch_ext};
+
+            $self->{choch_int_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_choch_int};
+
+            $self->{eqh_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_eqh};
+
+            $self->{eql_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_eql};
+
+            $self->{fibonacci_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_fibonacci};
+
+            $self->{levels_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_levels};
+
+            # Order Blocks (Supply/Demand): franjas, se dibujan junto a las
+            # demás cajas (FVG) para quedar bajo las líneas de estructura.
+            $self->{orderblocks_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_orderblocks};
+
+            # SuperTrend y HalfTrend: líneas de tendencia, se dibujan al
+            # final para quedar por encima de zonas y estructura.
+            $self->{supertrend_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_supertrend};
+
+            $self->{halftrend_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_halftrend};
+
+            $self->{range_filter_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_range_filter};
+
+
+            $self->{channel_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_channel};
+
+            # Ghost Lines (zigzag + rastro horizontal) primero, para quedar
+            # por debajo del VWAP fantasma y de los marcadores de pivote.
+            $self->{ghost_lines_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_ghost_lines};
+
+            $self->{ghost_vwap_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_ghost_vwap};
+
+            $self->{ghost_anchors_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_ghost_anchors};
+
+            $self->{multi_vwap_overlay}->draw($self->{price_canvas}, $scale, $start, $end)
+                if $self->{show_multi_vwap};
+
+        }
+    }
+
+    # --- VWAP Anclado: independiente de la caché de Liquidez/SMC, ya que
+    # depende de un ancla elegida manualmente por el usuario en lugar de la
+    # temporalidad o el último índice. ---
+    if ($self->{show_vwap_anchored} && defined $self->{vwap_anchor_index}) {
+        $self->update_vwap_anchored_overlay($self->{market_data}->last_index());
+
+        my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
+        if ($scale) {
+            $self->{vwap_anchored_overlay}->draw($self->{price_canvas}, $scale, $start, $end);
+        }
+    }
+
+    # --- Volume Profile Anclado: igual que el VWAP Anclado, es
+    # independiente de la caché de Liquidez/SMC porque depende de un ancla
+    # elegida manualmente por el usuario. ---
+    if ($self->{show_volume_profile_anchored} && defined $self->{volume_profile_anchor_index}) {
+        $self->update_volume_profile_anchored_overlay($self->{market_data}->last_index());
+
+        my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
+        if ($scale) {
+            $self->{volume_profile_anchored_overlay}->draw($self->{price_canvas}, $scale, $start, $end);
+        }
+    }
+
     if (defined $self->{crosshair_x} && defined $self->{crosshair_y}) {
         $self->draw_crosshair_all(
             $self->{crosshair_x}, 
@@ -125,6 +497,1079 @@ sub render {
             $self->{crosshair_w}
         );
     }
+}
+
+=head2 update_smc_overlay($until_index)
+
+Calcula (con caché) los resultados de Liquidez y de Estructura SMC hasta el
+índice indicado, y actualiza las capas visuales correspondientes. El caché
+evita recalcular ambos motores en cada render (por ejemplo al mover el
+crosshair), recalculando sólo cuando cambia la temporalidad activa o el
+índice de la última vela disponible.
+
+=cut
+
+=head2 update_smc_overlay($until_index)
+
+Calcula de forma incremental los resultados de Liquidez y Estructura SMC. 
+Procesa únicamente las velas nuevas desde la última actualización.
+
+=cut
+
+sub update_smc_overlay {
+    my ($self, $until_index) = @_;
+    return unless defined $until_index && $until_index >= 0;
+
+    my $market_data = $self->{market_data};
+    my $tf = $market_data->{timeframe} // '1m';
+
+    my $cache_key = join(':', $tf, $until_index);
+    return if defined $self->{smc_cache_key} && $self->{smc_cache_key} eq $cache_key;
+
+    my $atr_values = $self->{indicator_manager} ? $self->{indicator_manager}->get('ATR') : undef;
+    return unless $atr_values;
+
+    my $candles_full = $market_data->get_slice(0, $until_index);
+    
+    # 1. Determinar desde dónde empezar a procesar
+    my $start_idx = $self->{last_processed_index} + 1;
+    $start_idx = 0 if $start_idx < 0; # Seguridad para el inicio
+
+# Reseteamos los motores y empezamos de 0 si:
+    #  a) cambiamos de temporalidad, o
+    #  b) el límite de velas disponible RETROCEDIÓ respecto a lo ya
+    #     procesado (típicamente al entrar en Modo Replay sobre un gráfico
+    #     que ya tenía el histórico completo calculado, o al pulsar
+    #     "retroceder" dentro del Replay). Los motores son incrementales y
+    #     sólo saben avanzar: si no se resetean aquí, conservan zonas/
+    #     pivotes/eventos calculados con velas que el Replay debería
+    #     ocultar, y esos overlays obsoletos se siguen dibujando más allá
+    #     del límite visible.
+    my $prev_tf = $self->{last_processed_tf} // '';
+    my $rewound = ($until_index < $self->{last_processed_index});
+    if ($tf ne $prev_tf || $rewound) {
+        $self->{liquidity_engine}->reset();
+        $self->{fvg_engine}->reset();
+        $self->{structure_engine}->reset();
+        $self->{orderblocks_engine}->reset();
+        $self->{smc_engine}->reset();          # <-- Añade esto
+        $self->{smc_internal_engine}->reset(); # <-- Añade esto (si lo usas incremental)
+        $self->{supertrend_engine}->reset();
+        $self->{halftrend_engine}->reset();
+        $self->{range_filter_engine}->reset();
+        $self->{anchors_engine}->reset();
+
+        $start_idx = 0;
+        $self->{last_processed_tf} = $tf;
+        $self->{last_processed_index} = -1;
+    }
+
+    # 2. Bucle Incremental: Alimentar velas una a una
+    my ($liq_result, $fvg_result, $structure_result, $orderblocks_result);
+    my ($supertrend_result, $halftrend_result, $range_filter_result);
+    my $channel_result;
+    my $anchors_result;
+
+    for my $i ($start_idx .. $until_index) {
+        my $prev_pivots_count = scalar @{$self->{liquidity_engine}->{pivots}};
+        
+        $liq_result         = $self->{liquidity_engine}->update_last($candles_full, $atr_values, $i);
+        $fvg_result         = $self->{fvg_engine}->update_last($candles_full, $atr_values, $i);
+        $structure_result   = $self->{structure_engine}->update_last($candles_full, $atr_values, $i);
+        $orderblocks_result = $self->{orderblocks_engine}->update_last($candles_full, $atr_values, $i);
+
+        # Supertrend, HalfTrend y Range Filter siguen ahora el mismo
+        # contrato incremental que los anteriores.
+        $supertrend_result   = $self->{supertrend_engine}->update_last($candles_full, $atr_values, $i);
+        $halftrend_result    = $self->{halftrend_engine}->update_last($candles_full, $atr_values, $i);
+        $range_filter_result = $self->{range_filter_engine}->update_last($candles_full, $atr_values, $i);
+
+        $channel_result = $self->{channel_engine}->update_last($candles_full, $atr_values, $i);
+
+        # Anchors ("Ghost Anchors" / "Ghost Lines" / "Ghost VWAP"): mismo
+        # contrato incremental C<update_last($candles, $atr_values, $i)>.
+        $anchors_result = $self->{anchors_engine}->update_last($candles_full, $atr_values, $i);
+
+        # Si Liquidity detectó un nuevo pivote estructural, pasarlo a SMC_Structures
+        my $current_pivots = $self->{liquidity_engine}->{pivots};
+        if (scalar @$current_pivots > $prev_pivots_count) {
+            my $new_pivot = $current_pivots->[-1];
+            $self->{smc_engine}->update_last($new_pivot);
+        }
+    }
+
+    # 3. Guardar el progreso
+    $self->{last_processed_index} = $until_index;
+
+    # Extraer los resultados finales requeridos por los Overlays
+    my $smc_result = {
+        structure => $self->{smc_engine}->{structure},
+        events    => $self->{smc_engine}->{events},
+    };
+
+    # (Nota: Fibonacci/Levels siguen calculándose por reconstrucción total,
+    # ya que dependen del array de estructura ya consolidado y no de un
+    # recorrido vela a vela; Supertrend/HalfTrend/RangeFilter ya se
+    # calcularon de forma incremental en el bucle anterior).
+    my $fibonacci_result  = $self->{fibonacci_engine}->calculate($smc_result->{structure});
+    my $levels_result     = $self->{levels_engine}->calculate_until($candles_full, $until_index);
+    
+if ($self->{show_multi_vwap}) {
+    my $multi_res = $self->{multi_vwap_engine}->update_last($candles_full, $anchors_result, $until_index);
+    $self->{multi_vwap_overlay}->set_result($multi_res);
+}
+
+    # 4. Actualizar Overlays
+    $self->{zigzag_ext_overlay}->set_result($smc_result);
+    $self->{swing_overlay}->set_result($liq_result);
+    $self->{liquidity_overlay}->set_result($liq_result);
+
+    $self->{bos_ext_overlay}->set_result($structure_result);
+    $self->{bos_int_overlay}->set_result($structure_result);
+    $self->{choch_ext_overlay}->set_result($structure_result);
+    $self->{choch_int_overlay}->set_result($structure_result);
+    $self->{eqh_overlay}->set_result($structure_result);
+    $self->{eql_overlay}->set_result($structure_result);
+
+    $self->{fibonacci_overlay}->set_result($fibonacci_result);
+    $self->{levels_overlay}->set_result($levels_result);
+    $self->{fvg_overlay}->set_result($fvg_result);
+    $self->{supertrend_overlay}->set_result($supertrend_result);
+    $self->{halftrend_overlay}->set_result($halftrend_result);
+    $self->{range_filter_overlay}->set_result($range_filter_result);
+    $self->{orderblocks_overlay}->set_result($orderblocks_result);
+
+    $self->{channel_overlay}->set_result($channel_result);
+
+    $self->{ghost_anchors_overlay}->set_result($anchors_result);
+    $self->{ghost_lines_overlay}->set_result($anchors_result);
+    $self->{ghost_vwap_overlay}->set_result($anchors_result);
+
+    $self->{structure_result} = $structure_result;
+    $self->{smc_cache_key} = $cache_key;
+}
+
+=head2 update_zigzag_internal_overlay()
+
+Calcula (con caché) el "Zigzag Interno" (Multi Time Frame, réplica de
+zzmtf.txt). A diferencia del resto de indicadores de estructura, éste NO
+se calcula sobre la temporalidad activa del gráfico, sino sobre la
+temporalidad elegida en C<zigzag_internal_tf> (15m/1h/2h/4h/1d). Los
+pivotes resultantes se "traducen" al espacio de índices de la
+temporalidad activa mediante C<MarketData::index_for_time> para poder
+dibujarse con la misma escala que el resto del gráfico.
+
+=cut
+
+sub update_zigzag_internal_overlay {
+    my ($self) = @_;
+
+    my $market_data = $self->{market_data};
+    return unless $market_data;
+
+    my $mtf = $self->{zigzag_internal_tf} // '1h';
+    my $chart_tf = $market_data->{timeframe} // '1m';
+
+    my $mtf_candles = $market_data->get_timeframe_candles($mtf);
+    my $mtf_count   = scalar @$mtf_candles;
+
+    my $cache_key = join(':', $chart_tf, $mtf, $mtf_count, $market_data->last_index());
+    return if defined $self->{zigzag_internal_cache_key}
+           && $self->{zigzag_internal_cache_key} eq $cache_key;
+
+    # Igual que en update_smc_overlay: el motor es incremental (mismo
+    # contrato que Liquidity/FVG/Structure/OrderBlocks/SMC_Structures), así
+    # que sólo se resetea y se recalcula desde 0 cuando cambia el MTF
+    # elegido o cuando la cantidad de velas MTF disponibles RETROCEDE
+    # respecto a lo ya procesado (p.ej. al entrar o retroceder en Modo
+    # Replay). En cualquier otro caso simplemente se alimentan las velas
+    # MTF nuevas que hayan aparecido desde el último cálculo.
+    my $prev_mtf = $self->{zigzag_internal_last_mtf} // '';
+    my $rewound  = ($mtf_count < ($self->{zigzag_internal_last_count} // -1));
+
+    if ($mtf ne $prev_mtf || $rewound) {
+        $self->{zigzag_internal_engine}->reset();
+        $self->{zigzag_internal_last_count} = -1;
+        $self->{zigzag_internal_last_mtf}   = $mtf;
+    }
+
+    my $start_idx = ($self->{zigzag_internal_last_count} // -1) + 1;
+    $start_idx = 0 if $start_idx < 0;
+
+    my $result;
+    for my $i ($start_idx .. $mtf_count - 1) {
+        $result = $self->{zigzag_internal_engine}->update_last($mtf_candles, undef, $i);
+    }
+    $result //= { pivots => $self->{zigzag_internal_engine}->get_values() };
+    $self->{zigzag_internal_last_count} = $mtf_count - 1;
+
+    # Traducimos cada pivote (calculado en el espacio de índices/tiempo de
+    # $mtf) a una vela REAL y visible de la temporalidad activa del gráfico:
+    # buscamos, dentro del bloque horario de esa vela MTF, cuál vela de la
+    # temporalidad activa tiene el high/low exacto que originó el pivote.
+    # Esto evita que el punto quede "flotando" sin tocar ninguna mecha.
+    my @translated;
+    for my $p (@{ $result->{pivots} }) {
+        my $mtf_idx  = $p->{index};
+        my $time_from = $p->{time};
+        my $time_to   = (defined $mtf_candles->[$mtf_idx + 1])
+                       ? $mtf_candles->[$mtf_idx + 1]->{time}
+                       : undef;
+        my $ptype = ($p->{dir} == 1) ? 'high' : 'low';
+
+        my ($idx, $exact_price) = $market_data->find_pivot_index($time_from, $time_to, $ptype);
+        next unless defined $idx;
+
+        push @translated, {
+            index        => $idx,
+            time         => $p->{time},
+            price        => $exact_price,
+            dir          => $p->{dir},
+            consolidated => $p->{consolidated},
+        };
+    }
+
+    $self->{zigzag_internal_overlay}->set_result({ pivots => \@translated });
+    $self->{zigzag_internal_cache_key} = $cache_key;
+}
+
+=head2 set_zigzag_internal_timeframe($tf)
+
+Cambia la temporalidad "Multi Time Frame" usada por el Zigzag Interno
+(15m, 1h, 2h, 4h o 1d) e invalida su caché para forzar el recálculo.
+
+=cut
+
+sub set_zigzag_internal_timeframe {
+    my ($self, $tf) = @_;
+    return unless defined $tf;
+
+    $self->{zigzag_internal_tf} = $tf;
+    $self->{zigzag_internal_cache_key} = undef;
+
+    $self->request_render();
+}
+
+=head2 update_vwap_anchored_overlay($until_index)
+
+Calcula (con caché) la serie del VWAP Anclado desde la vela de ancla
+($self->{vwap_anchor_index}) hasta $until_index, y actualiza la capa visual.
+El caché evita recalcular en cada render (por ejemplo al mover el
+crosshair), recalculando sólo cuando cambia la temporalidad, el ancla o el
+índice de la última vela disponible (nueva vela recibida).
+
+=cut
+
+sub update_vwap_anchored_overlay {
+    my ($self, $until_index) = @_;
+    return unless defined $until_index && $until_index >= 0;
+
+    my $mode = $self->{vwap_anchor_mode} // 'pivot';
+    if ($mode ne 'pivot') {
+        # Los modos automáticos ('session_start', 'session_open',
+        # 'bos_confirmed', 'choch_confirmed') se recalculan en cada render
+        # para que el ancla siga a la última sesión/BOS/CHoCH confirmado a
+        # medida que llegan velas nuevas.
+        if ($mode eq 'bos_confirmed' || $mode eq 'choch_confirmed') {
+            $self->update_smc_overlay($until_index);
+        }
+
+        my $idx = $self->compute_vwap_anchor_index($mode, $until_index);
+        $self->{vwap_anchor_index} = $idx if defined $idx;
+    }
+
+    my $anchor_index = $self->{vwap_anchor_index};
+    return unless defined $anchor_index;
+
+    my $market_data = $self->{market_data};
+    my $tf = $market_data->{timeframe} // '1m';
+
+    my $cache_key = join(':', $tf, $anchor_index, $until_index);
+    return if defined $self->{vwap_cache_key} && $self->{vwap_cache_key} eq $cache_key;
+
+    my $candles_full = $market_data->get_slice(0, $until_index);
+
+    my $vwap_result = $self->{vwap_anchored_engine}->calculate_until(
+        $candles_full,
+        $anchor_index,
+        $until_index
+    );
+
+    $self->{vwap_anchored_overlay}->set_result($vwap_result);
+    $self->{vwap_cache_key} = $cache_key;
+}
+
+=head2 activate_vwap_anchor_selection()
+
+Activa el "modo de selección de ancla": la próxima vez que el usuario haga
+click sobre una vela del panel de precios, esa vela se usará como ancla del
+VWAP (igual que la herramienta "Anchored VWAP" de TradingView). Mientras
+este modo está activo, el arrastre normal (panning) queda desactivado y el
+cursor cambia para indicar que se espera un click de selección.
+
+=cut
+
+sub activate_vwap_anchor_selection {
+    my ($self) = @_;
+    $self->{vwap_anchor_selection_mode} = 1;
+
+    if (my $cv = $self->{price_canvas}) {
+        $cv->configure(-cursor => 'target');
+    }
+}
+
+=head2 cancel_vwap_anchor_selection()
+
+Cancela el modo de selección de ancla sin activar el indicador (por ejemplo
+al pulsar Escape). Devuelve el cursor del panel de precios a su estado
+normal.
+
+=cut
+
+sub cancel_vwap_anchor_selection {
+    my ($self) = @_;
+    $self->{vwap_anchor_selection_mode} = 0;
+
+    if (my $cv = $self->{price_canvas}) {
+        $cv->configure(-cursor => 'crosshair');
+    }
+}
+
+=head2 set_vwap_anchor($index)
+
+Fija la vela de ancla del VWAP a partir del índice global recibido (por
+ejemplo, resultado de un click sobre el panel de precios), activa el
+indicador y fuerza su recálculo.
+
+=cut
+
+sub set_vwap_anchor {
+    my ($self, $index) = @_;
+    return unless defined $index;
+
+    my $market_data = $self->{market_data};
+    my $last_index  = $market_data ? $market_data->last_index() : undef;
+    return unless defined $last_index;
+
+    $index = 0          if $index < 0;
+    $index = $last_index if $index > $last_index;
+
+    $self->{vwap_anchor_index}  = $index;
+    $self->{vwap_anchor_mode}   = 'pivot';
+    $self->{show_vwap_anchored} = 1;
+    $self->{vwap_cache_key}     = undef;   # fuerza recálculo inmediato
+
+    $self->cancel_vwap_anchor_selection();
+    $self->{on_vwap_anchor_set}->($index)
+        if ref($self->{on_vwap_anchor_set}) eq 'CODE';
+    $self->request_render();
+}
+
+=head2 set_vwap_anchor_mode($mode)
+
+Cambia el modo de anclaje del VWAP Anclado. Modos soportados:
+
+  'session_start'   => primera vela de todo el historial ("inicio de sesión")
+  'session_open'    => primera vela de la última apertura de mercado
+                        detectada (tras el mayor hueco de tiempo reciente)
+  'bos_confirmed'   => vela de confirmación (cierre) del último BOS externo
+  'choch_confirmed' => vela de confirmación (cierre) del último CHoCH externo
+  'pivot'           => selección manual por click ("elegir pivote", lógica
+                        clásica)
+
+Para los modos automáticos (todos salvo 'pivot'), el ancla se calcula de
+inmediato con la última vela disponible (sin esperar un click), se activa
+el indicador y se fuerza su recálculo. Para 'pivot' sólo se guarda el modo;
+es el checkbutton/click del usuario el que efectivamente fija el ancla.
+
+=cut
+
+sub set_vwap_anchor_mode {
+    my ($self, $mode) = @_;
+    return unless defined $mode;
+
+    $self->{vwap_anchor_mode} = $mode;
+    $self->cancel_vwap_anchor_selection();
+
+    if ($mode ne 'pivot') {
+        my $market_data = $self->{market_data};
+        my $last_index  = $market_data ? $market_data->last_index() : undef;
+
+        if (defined $last_index) {
+            $self->update_smc_overlay($last_index)
+                if $mode eq 'bos_confirmed' || $mode eq 'choch_confirmed';
+
+            my $idx = $self->compute_vwap_anchor_index($mode, $last_index);
+            $self->{vwap_anchor_index} = $idx if defined $idx;
+        }
+
+        $self->{show_vwap_anchored} = 1;
+        $self->{vwap_cache_key}     = undef;   # fuerza recálculo inmediato
+    }
+
+    $self->request_render();
+}
+
+=head2 compute_vwap_anchor_index($mode, $until_index)
+
+Calcula el índice de ancla correspondiente a C<$mode> (ver
+C<set_vwap_anchor_mode>), evaluado hasta C<$until_index>. Devuelve C<undef>
+si el modo es 'pivot' (anclaje manual, no se recalcula solo).
+
+=cut
+
+sub compute_vwap_anchor_index {
+    my ($self, $mode, $until_index) = @_;
+    return undef unless defined $until_index;
+
+    if ($mode eq 'session_start') {
+        return 0;
+    }
+    elsif ($mode eq 'session_open') {
+        my $market_data = $self->{market_data};
+        my $idx = $market_data ? $market_data->find_last_session_open_index($until_index) : undef;
+        return defined $idx ? $idx : 0;
+    }
+    elsif ($mode eq 'bos_confirmed') {
+        my $idx = $self->find_last_structure_event_index($until_index, 'BOS');
+        return defined $idx ? $idx : 0;
+    }
+    elsif ($mode eq 'choch_confirmed') {
+        my $idx = $self->find_last_structure_event_index($until_index, 'CHoCH');
+        return defined $idx ? $idx : 0;
+    }
+
+    return undef;
+}
+
+=head2 find_last_structure_event_index($until_index, $prefix)
+
+Busca, entre los eventos de estructura EXTERNA calculados por
+C<update_smc_overlay> ($self->{structure_result}{events}), el de mayor
+índice cuyo tipo empieza con C<$prefix> ('BOS' o 'CHoCH') y cuyo índice no
+supera C<$until_index>. Devuelve el índice de esa vela (la vela de
+confirmación/cierre del BOS o CHoCH) o C<undef> si todavía no se detectó
+ninguno.
+
+=cut
+
+sub find_last_structure_event_index {
+    my ($self, $until_index, $prefix) = @_;
+    return undef unless defined $until_index && defined $prefix;
+
+    my $events = ($self->{structure_result} && $self->{structure_result}->{events})
+        ? $self->{structure_result}->{events}
+        : [];
+
+    my $best;
+    for my $ev (@$events) {
+        next unless defined $ev->{tier} && $ev->{tier} eq 'external';
+        next unless defined $ev->{type} && index($ev->{type}, $prefix) == 0;
+        next unless defined $ev->{index};
+        next if $ev->{index} > $until_index;
+
+        $best = $ev->{index} if !defined $best || $ev->{index} > $best;
+    }
+
+    return $best;
+}
+
+=head2 set_vwap_sigma_range($n)
+
+Configura cuántas bandas de desviación estándar se muestran para el VWAP
+Anclado (1, 2 o 3 sigmas). Actualiza la capa visual y redibuja de inmediato
+si el indicador está activo; no requiere recalcular el indicador, ya que
+éste siempre calcula las tres bandas.
+
+=cut
+
+sub set_vwap_sigma_range {
+    my ($self, $n) = @_;
+    return unless defined $n;
+
+    $n = 1 if $n < 1;
+    $n = 3 if $n > 3;
+
+    $self->{vwap_sigma_range} = $n;
+    $self->{vwap_anchored_overlay}->set_sigma_range($n)
+        if $self->{vwap_anchored_overlay};
+
+    $self->request_render();
+}
+
+=head2 set_volume_profile_sigma_range($n)
+
+Configura cuántos rangos de desviación estándar (líneas VAH/VAL) se
+muestran para el Volume Profile Anclado (1, 2 o 3 sigmas). A diferencia del
+VWAP Anclado, estos rangos se dibujan siempre como líneas sueltas, nunca
+como bandas/canales rellenos. Actualiza la capa visual y redibuja de
+inmediato si el indicador está activo; no requiere recalcular el
+indicador, ya que éste siempre calcula los tres rangos.
+
+=cut
+
+sub set_volume_profile_sigma_range {
+    my ($self, $n) = @_;
+    return unless defined $n;
+
+    $n = 1 if $n < 1;
+    $n = 3 if $n > 3;
+
+    $self->{volume_profile_sigma_range} = $n;
+    $self->{volume_profile_anchored_overlay}->set_sigma_range($n)
+        if $self->{volume_profile_anchored_overlay};
+
+    $self->request_render();
+}
+
+=head2 set_volume_profile_num_bins($n)
+
+Configura el número de franjas (barras) del histograma del Volume Profile
+Anclado. Se acota a un rango prudente [5, 200] para evitar histogramas
+degenerados (demasiado pocas franjas) o excesivamente costosos de calcular
+y renderizar (demasiadas franjas). Invalida la caché del indicador para
+forzar un recálculo inmediato con el nuevo número de barras y redibuja si
+el indicador está activo.
+
+=cut
+
+sub set_volume_profile_num_bins {
+    my ($self, $n) = @_;
+    return unless defined $n;
+
+    $n = 5   if $n < 5;
+    $n = 200 if $n > 200;
+    $n = int($n);
+
+    $self->{volume_profile_num_bins} = $n;
+    $self->{volume_profile_anchored_engine}{num_bins} = $n
+        if $self->{volume_profile_anchored_engine};
+
+    # Invalidamos la caché para que el próximo render recalcule el
+    # histograma con el nuevo número de franjas (el cache_key normal no
+    # cambia por sí solo, ya que no depende del ancla ni de la última vela).
+    $self->{volume_profile_cache_key} = undef;
+
+    $self->request_render();
+}
+
+=head2 set_multi_vwap_sigma_range($n)
+
+Configura cuántas bandas de desviación estándar (1, 2 o 3 sigmas) se
+muestran para TODAS las líneas del Multi Anchored VWAP. Actualiza la capa
+visual y redibuja de inmediato; no requiere recalcular el indicador, ya
+que éste siempre calcula las tres bandas para cada ancla.
+
+=cut
+
+sub set_multi_vwap_sigma_range {
+    my ($self, $n) = @_;
+    return unless defined $n;
+
+    $n = 1 if $n < 1;
+    $n = 3 if $n > 3;
+
+    $self->{multi_vwap_sigma_range} = $n;
+    $self->{multi_vwap_overlay}->set_sigma_range($n)
+        if $self->{multi_vwap_overlay};
+
+    $self->request_render();
+}
+
+=head2 set_ghost_vwap_sigma_range($n)
+
+Configura cuántas bandas de desviación estándar (1, 2 o 3 sigmas) se
+muestran para "Ghost VWAP". Actualiza la capa visual y redibuja de
+inmediato; no requiere recalcular el indicador, ya que
+Market::Indicators::Anchors siempre calcula las tres bandas.
+
+=cut
+
+sub set_ghost_vwap_sigma_range {
+    my ($self, $n) = @_;
+    return unless defined $n;
+
+    $n = 1 if $n < 1;
+    $n = 3 if $n > 3;
+
+    $self->{ghost_vwap_sigma_range} = $n;
+    $self->{ghost_vwap_overlay}->set_sigma_range($n)
+        if $self->{ghost_vwap_overlay};
+
+    $self->request_render();
+}
+
+=head2 update_volume_profile_anchored_overlay($until_index)
+
+Calcula (con caché) el histograma del Volume Profile Anclado desde la vela
+de ancla ($self->{volume_profile_anchor_index}) hasta $until_index, y
+actualiza la capa visual. El caché evita recalcular en cada render (por
+ejemplo al mover el crosshair), recalculando sólo cuando cambia la
+temporalidad, el ancla o el índice de la última vela disponible (nueva vela
+recibida).
+
+=cut
+
+sub update_volume_profile_anchored_overlay {
+    my ($self, $until_index) = @_;
+    return unless defined $until_index && $until_index >= 0;
+
+    my $mode = $self->{volume_profile_anchor_mode} // 'pivot';
+    if ($mode ne 'pivot') {
+        # Los modos automáticos ('session_start', 'session_open',
+        # 'bos_confirmed', 'choch_confirmed') se recalculan en cada render
+        # para que el ancla siga a la última sesión/BOS/CHoCH confirmado a
+        # medida que llegan velas nuevas.
+        if ($mode eq 'bos_confirmed' || $mode eq 'choch_confirmed') {
+            $self->update_smc_overlay($until_index);
+        }
+
+        my $idx = $self->compute_vwap_anchor_index($mode, $until_index);
+        $self->{volume_profile_anchor_index} = $idx if defined $idx;
+    }
+
+    my $anchor_index = $self->{volume_profile_anchor_index};
+    return unless defined $anchor_index;
+
+    my $market_data = $self->{market_data};
+    my $tf = $market_data->{timeframe} // '1m';
+
+    my $cache_key = join(':', $tf, $anchor_index, $until_index);
+    return if defined $self->{volume_profile_cache_key} && $self->{volume_profile_cache_key} eq $cache_key;
+
+    my $candles_full = $market_data->get_slice(0, $until_index);
+
+    my $vp_result = $self->{volume_profile_anchored_engine}->calculate_until(
+        $candles_full,
+        $anchor_index,
+        $until_index
+    );
+
+    $self->{volume_profile_anchored_overlay}->set_result($vp_result);
+    $self->{volume_profile_cache_key} = $cache_key;
+}
+
+=head2 activate_volume_profile_anchor_selection()
+
+Activa el "modo de selección de ancla" del Volume Profile: la próxima vez
+que el usuario haga click sobre una vela del panel de precios, esa vela se
+usará como ancla del histograma (igual que la herramienta "Anchored Volume
+Profile" de TradingView). Mientras este modo está activo, el arrastre
+normal (panning) queda desactivado y el cursor cambia para indicar que se
+espera un click de selección.
+
+=cut
+
+sub activate_volume_profile_anchor_selection {
+    my ($self) = @_;
+    $self->{volume_profile_anchor_selection_mode} = 1;
+
+    if (my $cv = $self->{price_canvas}) {
+        $cv->configure(-cursor => 'target');
+    }
+}
+
+=head2 cancel_volume_profile_anchor_selection()
+
+Cancela el modo de selección de ancla sin activar el indicador (por ejemplo
+al pulsar Escape). Devuelve el cursor del panel de precios a su estado
+normal.
+
+=cut
+
+sub cancel_volume_profile_anchor_selection {
+    my ($self) = @_;
+    $self->{volume_profile_anchor_selection_mode} = 0;
+
+    if (my $cv = $self->{price_canvas}) {
+        $cv->configure(-cursor => 'crosshair');
+    }
+}
+
+=head2 set_volume_profile_anchor($index)
+
+Fija la vela de ancla del Volume Profile a partir del índice global
+recibido (por ejemplo, resultado de un click sobre el panel de precios),
+activa el indicador y fuerza su recálculo.
+
+=cut
+
+sub set_volume_profile_anchor {
+    my ($self, $index) = @_;
+    return unless defined $index;
+
+    my $market_data = $self->{market_data};
+    my $last_index  = $market_data ? $market_data->last_index() : undef;
+    return unless defined $last_index;
+
+    $index = 0          if $index < 0;
+    $index = $last_index if $index > $last_index;
+
+    $self->{volume_profile_anchor_index}  = $index;
+    $self->{volume_profile_anchor_mode}   = 'pivot';
+    $self->{show_volume_profile_anchored} = 1;
+    $self->{volume_profile_cache_key}     = undef;   # fuerza recálculo inmediato
+
+    $self->cancel_volume_profile_anchor_selection();
+    $self->{on_volume_profile_anchor_set}->($index)
+        if ref($self->{on_volume_profile_anchor_set}) eq 'CODE';
+    $self->request_render();
+}
+
+=head2 set_volume_profile_anchor_mode($mode)
+
+Cambia el modo de anclaje del Volume Profile Anclado. Mismos modos que
+C<set_vwap_anchor_mode>: 'session_start', 'session_open', 'bos_confirmed',
+'choch_confirmed' o 'pivot' (selección manual por click).
+
+Para los modos automáticos, el ancla se calcula de inmediato con la última
+vela disponible (sin esperar un click), se activa el indicador y se fuerza
+su recálculo. Para 'pivot' sólo se guarda el modo.
+
+=cut
+
+sub set_volume_profile_anchor_mode {
+    my ($self, $mode) = @_;
+    return unless defined $mode;
+
+    $self->{volume_profile_anchor_mode} = $mode;
+    $self->cancel_volume_profile_anchor_selection();
+
+    if ($mode ne 'pivot') {
+        my $market_data = $self->{market_data};
+        my $last_index  = $market_data ? $market_data->last_index() : undef;
+
+        if (defined $last_index) {
+            $self->update_smc_overlay($last_index)
+                if $mode eq 'bos_confirmed' || $mode eq 'choch_confirmed';
+
+            my $idx = $self->compute_vwap_anchor_index($mode, $last_index);
+            $self->{volume_profile_anchor_index} = $idx if defined $idx;
+        }
+
+        $self->{show_volume_profile_anchored} = 1;
+        $self->{volume_profile_cache_key}     = undef;   # fuerza recálculo inmediato
+    }
+
+    $self->request_render();
+}
+
+=head1 MODO REPLAY
+
+Permite "viajar en el tiempo" dentro del histórico ya cargado: el usuario
+elige una vela con un click (igual que la selección de ancla del VWAP) y,
+a partir de ahí, sólo se consideran visibles/disponibles (para el motor,
+los indicadores y overlays) las velas hasta ese punto. Los botones de
+avance/retroceso mueven ese límite vela a vela, sin borrar ni recargar
+ningún dato: la implementación real vive en C<Market::MarketData>
+(C<replay_start>/C<replay_forward>/C<replay_backward>/C<replay_stop>).
+
+=cut
+
+=head2 activate_replay_selection()
+
+Activa el modo de selección de vela para el Modo Replay: el próximo click
+del usuario sobre el panel de precios fijará el punto de partida. Mientras
+este modo está activo, el arrastre normal (panning) queda desactivado y el
+cursor cambia para indicar que se espera un click de selección.
+
+=cut
+
+sub activate_replay_selection {
+    my ($self) = @_;
+    $self->{replay_selection_mode} = 1;
+
+    if (my $cv = $self->{price_canvas}) {
+        $cv->configure(-cursor => 'target');
+    }
+}
+
+=head2 cancel_replay_selection()
+
+Cancela el modo de selección de vela del Replay sin activarlo (por
+ejemplo al pulsar Escape o hacer click derecho). Devuelve el cursor del
+panel de precios a su estado normal.
+
+=cut
+
+sub cancel_replay_selection {
+    my ($self) = @_;
+    $self->{replay_selection_mode} = 0;
+
+    if (my $cv = $self->{price_canvas}) {
+        $cv->configure(-cursor => 'crosshair');
+    }
+}
+
+=head2 start_replay($index)
+
+Fija la vela elegida por el usuario (índice global dentro de la
+temporalidad activa) como punto de partida del Modo Replay: sólo las
+velas hasta ese punto (inclusive) quedan visibles. Reencuadra la vista
+para que esa vela quede al borde derecho del gráfico.
+
+=cut
+
+sub start_replay {
+    my ($self, $index) = @_;
+    return unless defined $index;
+
+    # Detener cualquier reproducción automática activa
+    $self->replay_stop_playback() if $self->{replay_playback_active};
+
+    my $market_data = $self->{market_data};
+    $self->cancel_replay_selection();
+    return unless $market_data;
+
+    my $ok = $market_data->replay_start($index);
+    return unless $ok;
+
+    $self->{replay_mode} = 1;
+
+    # --- CENTRAR LA VELA SELECCIONADA ---
+    $self->_center_view_on_index($index);
+
+    $self->{on_replay_started}->()
+        if ref($self->{on_replay_started}) eq 'CODE';
+
+    $self->request_render();
+}
+
+=head2 replay_forward($steps)
+
+Botones ">>" / ">>>>": avanza C<$steps> velas (por defecto 1) el límite
+del Modo Replay (revela las siguientes velas del historial). No hace nada
+si el Replay no está activo; si el avance solicitado supera la última
+vela disponible, avanza hasta ahí sin fallar.
+
+=cut
+
+=head2 replay_forward($steps)
+
+Botones ">>" / ">>>>": avanza C<$steps> velas (por defecto 1) el
+límite del Modo Replay (revela las siguientes velas del historial).
+Mantiene la vela actual centrada en el gráfico.
+
+=cut
+
+sub replay_forward {
+    my ($self, $steps) = @_;
+    return unless $self->{replay_mode};
+
+    my $market_data = $self->{market_data};
+    return unless $market_data;
+
+    my $moved = $market_data->replay_forward($steps);
+    return unless $moved;
+
+    # --- MANTENER LA VELA ACTUAL CENTRADA ---
+    # Obtener el índice actual (límite del replay)
+    my $current_index = $market_data->get_replay_index();
+    return unless defined $current_index;
+    
+    $self->_center_view_on_index($current_index);
+
+    $self->request_render();
+}
+
+=head2 replay_backward($steps)
+
+Botones "<<" / "<<<<": retrocede C<$steps> velas (por defecto 1) el
+límite del Modo Replay (retira las últimas velas visibles). No hace nada
+si el Replay no está activo; nunca deja menos de una vela visible.
+
+=cut
+
+=head2 replay_backward($steps)
+
+Botones "<<" / "<<<<": retrocede C<$steps> velas (por defecto 1) el
+límite del Modo Replay (retira las últimas velas visibles).
+Mantiene la vela actual centrada en el gráfico.
+
+=cut
+
+sub replay_backward {
+    my ($self, $steps) = @_;
+    return unless $self->{replay_mode};
+
+    my $market_data = $self->{market_data};
+    return unless $market_data;
+
+    my $moved = $market_data->replay_backward($steps);
+    return unless $moved;
+
+    # --- MANTENER LA VELA ACTUAL CENTRADA ---
+    my $current_index = $market_data->get_replay_index();
+    return unless defined $current_index;
+    
+    $self->_center_view_on_index($current_index);
+
+    $self->request_render();
+}
+
+=head2 set_replay_speed($speed)
+
+Configura la velocidad de reproducción automática del Modo Replay.
+El rango va de 0.2 (1 vela cada 5 segundos) a 5.0 (5 velas por segundo).
+El valor por defecto es 1.0 (1 vela por segundo).
+
+=cut
+
+sub set_replay_speed {
+    my ($self, $speed) = @_;
+    return unless defined $speed;
+
+    $speed = 0.2 if $speed < 0.2;
+    $speed = 5.0 if $speed > 5.0;
+
+    $self->{replay_speed} = $speed;
+}
+
+=head2 _center_view_on_index($index)
+
+Método privado que centra la vista del gráfico en el índice especificado.
+Calcula el offset necesario para que la vela en $index quede en el centro
+de la pantalla.
+
+=cut
+
+sub _center_view_on_index {
+    my ($self, $index) = @_;
+    return unless defined $index;
+
+    my $market_data = $self->{market_data};
+    return unless $market_data;
+
+    my $total_candles = $market_data->size() || 0;
+    my $visible_bars = $self->{visible_bars} || 100;
+    my $center_offset = int($visible_bars / 2);
+    
+    # Calcular el offset para centrar $index
+    my $nuevo_offset = $total_candles - 1 - $index - $center_offset;
+    
+    # Asegurar que el offset esté dentro de los límites válidos
+    my $offset_min = -($visible_bars - 2);
+    my $offset_max = $total_candles - 2;
+    $nuevo_offset = $offset_min if $nuevo_offset < $offset_min;
+    $nuevo_offset = $offset_max if $nuevo_offset > $offset_max;
+    
+    $self->{offset} = $nuevo_offset;
+}
+
+=head2 replay_play()
+
+Inicia la reproducción automática del Modo Replay: avanza una vela cada
+cierto intervalo de tiempo determinado por C<replay_speed>.
+No hace nada si el Replay no está activo.
+
+=cut
+
+sub replay_play {
+    my ($self) = @_;
+    return unless $self->{replay_mode};
+
+    # Si ya está reproduciendo, detener primero
+    $self->replay_stop_playback() if $self->{replay_playback_active};
+
+    $self->{replay_playback_active} = 1;
+
+    $self->{on_replay_playback_started}->()
+        if ref($self->{on_replay_playback_started}) eq 'CODE';
+
+    $self->_replay_playback_loop();
+}
+
+=head2 _replay_playback_loop()
+
+Bucle interno de reproducción automática. Se programa a sí misma usando
+C<after> para avanzar una vela a la velocidad configurada. Se detiene
+cuando se alcanza el final del historial o cuando el usuario pulsa stop.
+
+=cut
+
+sub _replay_playback_loop {
+    my ($self) = @_;
+    return unless $self->{replay_playback_active};
+    return unless $self->{replay_mode};
+
+    my $market_data = $self->{market_data};
+    return unless $market_data;
+
+    # Avanzar una vela
+    my $moved = $market_data->replay_forward(1);
+
+    if ($moved) {
+        # --- CENTRAR LA NUEVA VELA ---
+        my $current_index = $market_data->get_replay_index();
+        $self->_center_view_on_index($current_index) if defined $current_index;
+        
+        $self->request_render();
+
+        # Programar el siguiente avance según la velocidad
+        my $delay_ms = int(1000 / $self->{replay_speed});
+        $delay_ms = 200 if $delay_ms < 200;   # Máximo 5 velas/segundo
+        $delay_ms = 5000 if $delay_ms > 5000; # Mínimo 1 vela cada 5 segundos
+
+        $self->{replay_playback_after_id} = $self->{widgets}->{main_window}->after(
+            $delay_ms,
+            sub { $self->_replay_playback_loop() if $self->{replay_playback_active} }
+        );
+    }
+    else {
+        # Llegamos al final del historial, detener reproducción automática
+        $self->replay_stop_playback();
+    }
+}
+
+=head2 replay_stop_playback()
+
+Detiene la reproducción automática del Modo Replay. No sale del modo
+Replay, sólo detiene el avance automático.
+
+=cut
+
+sub replay_stop_playback {
+    my ($self) = @_;
+
+    if ($self->{replay_playback_after_id}) {
+        if (my $mw = $self->{widgets}->{main_window}) {
+            $mw->afterCancel($self->{replay_playback_after_id});
+        }
+        $self->{replay_playback_after_id} = undef;
+    }
+
+    $self->{replay_playback_active} = 0;
+
+    $self->{on_replay_playback_stopped}->()
+        if ref($self->{on_replay_playback_stopped}) eq 'CODE';
+}
+
+=head2 exit_replay()
+
+Botón "EXIT": abandona el Modo Replay y restaura la visibilidad de todo
+el historial cargado. También detiene cualquier reproducción automática
+activa.
+
+=cut
+
+sub exit_replay {
+    my ($self) = @_;
+    return unless $self->{replay_mode} || $self->{replay_selection_mode};
+
+    # Detener reproducción automática si está activa
+    $self->replay_stop_playback() if $self->{replay_playback_active};
+
+    my $market_data = $self->{market_data};
+    $market_data->replay_stop() if $market_data;
+
+    $self->{replay_mode} = 0;
+    $self->cancel_replay_selection();
+    $self->{offset} = 0;
+
+    $self->{on_replay_exited}->()
+        if ref($self->{on_replay_exited}) eq 'CODE';
+
+    $self->request_render();
 }
 
 sub bind_all_canvas {
@@ -147,6 +1592,28 @@ sub bind_all_canvas {
         $cv->Tk::bind('<Configure>', sub { $self->request_render(); });
         $cv->Tk::bind('<Motion>', sub { 
             my $widget = shift; my $e = $widget->XEvent; $self->on_mouse_move($e) if $e; 
+        });
+    }
+
+    # Click derecho: cancela la selección de vela de ancla del VWAP o del
+    # Volume Profile, si alguna está activa
+    if ($price_cv) {
+        $price_cv->Tk::bind('<Button-3>', sub {
+            if ($self->{replay_selection_mode}) {
+                $self->cancel_replay_selection();
+                $self->{on_replay_selection_cancelled}->()
+                    if ref($self->{on_replay_selection_cancelled}) eq 'CODE';
+            }
+            if ($self->{vwap_anchor_selection_mode}) {
+                $self->cancel_vwap_anchor_selection();
+                $self->{on_vwap_selection_cancelled}->()
+                    if ref($self->{on_vwap_selection_cancelled}) eq 'CODE';
+            }
+            if ($self->{volume_profile_anchor_selection_mode}) {
+                $self->cancel_volume_profile_anchor_selection();
+                $self->{on_volume_profile_selection_cancelled}->()
+                    if ref($self->{on_volume_profile_selection_cancelled}) eq 'CODE';
+            }
         });
     }
 
@@ -191,14 +1658,53 @@ sub bind_all_canvas {
     for my $canvas (grep { defined } ($price_cv, $atr_cv)) {
         $canvas->Tk::bind('<Button-1>', sub {
             my $widget = shift; my $e = $widget->XEvent;
-            if ($e) {
-                $self->{last_drag_x} = $e->x;
-                $self->{last_drag_y} = $e->y;
+            return unless $e;
+
+            # --- Selección de vela de partida para el Modo Replay ---
+            # Si estamos esperando el click de selección (botón REPLAY), el
+            # click sobre el panel de precios elige la vela y NO debe
+            # iniciar un arrastre/panning normal.
+            if ($self->{replay_selection_mode} && $canvas == $price_cv) {
+                my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
+                if ($scale) {
+                    my $index = $scale->x_to_index($e->x);
+                    $self->start_replay($index);
+                }
+                return;
             }
+
+            # --- Selección de vela de ancla para el VWAP Anclado ---
+            # Si estamos esperando el click de anclaje (activado desde el
+            # menú de indicadores), el click sobre el panel de precios elige
+            # la vela y NO debe iniciar un arrastre/panning normal.
+            if ($self->{vwap_anchor_selection_mode} && $canvas == $price_cv) {
+                my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
+                if ($scale) {
+                    my $index = $scale->x_to_index($e->x);
+                    $self->set_vwap_anchor($index);
+                }
+                return;
+            }
+
+            # --- Selección de vela de ancla para el Volume Profile Anclado ---
+            if ($self->{volume_profile_anchor_selection_mode} && $canvas == $price_cv) {
+                my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
+                if ($scale) {
+                    my $index = $scale->x_to_index($e->x);
+                    $self->set_volume_profile_anchor($index);
+                }
+                return;
+            }
+
+            $self->{last_drag_x} = $e->x;
+            $self->{last_drag_y} = $e->y;
         });
 
         $canvas->Tk::bind('<B1-Motion>', sub {
             my $widget = shift; my $e = $widget->XEvent;
+            return if $self->{replay_selection_mode};
+            return if $self->{vwap_anchor_selection_mode};
+            return if $self->{volume_profile_anchor_selection_mode};
             return unless $e && defined $self->{last_drag_x} && defined $self->{last_drag_y};
             
             $self->{crosshair_x} = $e->x;
@@ -393,81 +1899,421 @@ sub bind_events {
 
     $mw->Tk::bind('<Key-r>', sub { $self->reset_view(); });
     $mw->Tk::bind('<Key-R>', sub { $self->reset_view(); });
+
+    # Escape cancela la selección de vela de ancla del VWAP o del Volume
+    # Profile, si alguna está activa
+    $mw->Tk::bind('<Key-Escape>', sub {
+        if ($self->{replay_selection_mode}) {
+            $self->cancel_replay_selection();
+            $self->{on_replay_selection_cancelled}->()
+                if ref($self->{on_replay_selection_cancelled}) eq 'CODE';
+        }
+        if ($self->{vwap_anchor_selection_mode}) {
+            $self->cancel_vwap_anchor_selection();
+            $self->{on_vwap_selection_cancelled}->()
+                if ref($self->{on_vwap_selection_cancelled}) eq 'CODE';
+        }
+        if ($self->{volume_profile_anchor_selection_mode}) {
+            $self->cancel_volume_profile_anchor_selection();
+            $self->{on_volume_profile_selection_cancelled}->()
+                if ref($self->{on_volume_profile_selection_cancelled}) eq 'CODE';
+        }
+    });
 }
 
+# =============================================================================
+# compute_intraday_labels  —  Orquestador principal del eje de tiempo
+#
+# Arquitectura:
+#   1. find_pivot_labels()      → etiquetas "ancla" (cambios de día)
+#   2. fill_between_pivots()    → etiquetas horarias entre cada par de pivotes
+#   3. remove_overlaps()        → filtro final anti-solapamiento
+# =============================================================================
 sub compute_intraday_labels {
+    my ($self) = @_;
+
+    my $pivots  = $self->find_pivot_labels();
+    my $labels  = $self->fill_between_pivots($pivots);
+    $labels     = $self->remove_overlaps($labels);
+
+    return $labels;
+}
+
+# -----------------------------------------------------------------------------
+# find_pivot_labels()
+#
+# Recorre las velas visibles y devuelve una etiqueta "ancla" por cada
+# cambio de día detectado.  Resultado: type => 'day'.
+# -----------------------------------------------------------------------------
+sub find_pivot_labels {
     my ($self) = @_;
     my ($start, $end) = $self->compute_window();
     my $velas = $self->{market_data}->get_data();
-    my @etiquetas_visibles;
 
-    my $visibles = $self->{visible_bars};
-    my $salto = 1;
-    $salto = 5  if $visibles > 30;
-    $salto = 10 if $visibles > 100;
-    $salto = 50 if $visibles > 500;
+    # compute_window() puede devolver un $end más allá del último índice
+    # real del array (por ejemplo al desplazarse totalmente hacia la
+    # derecha, dejando espacio vacío para velas futuras). Si no se
+    # recorta, $velas->[$end] queda undef, no se genera el pivote de
+    # cierre y, como fill_between_pivots() exige al menos 2 pivotes,
+    # se pierden TODAS las etiquetas de tiempo. Recortamos siempre
+    # contra los límites reales de datos para evitarlo.
+    my $max_idx = $#$velas;
+    return [] if $max_idx < 0;
 
-    my $ultimo_dia_visto = "";
-    my %cambios_de_dia;
+    $start = 0        if $start < 0;
+    $end   = $max_idx if $end > $max_idx;
+    return [] if $start > $end;
 
-    # FASE 1: Identificar índices absolutos donde cambia el día
-    for my $i ($start .. $end) {
-        my $vela = $velas->[$i];
-        last unless $vela;
-        my $ts = $vela->{time} || "";
-        my ($dia_actual) = $ts =~ /^(\d{4}-\d{2}-\d{2})/;
-        $dia_actual //= "";
+    my @pivots;
+    my $ultimo_dia = "";
 
-        if ($dia_actual ne $ultimo_dia_visto && $ultimo_dia_visto ne "") {
-            $cambios_de_dia{$i} = 1;
-        }
-        $ultimo_dia_visto = $dia_actual if $dia_actual;
-    }
+    # Incluimos un pivote sintético al inicio de la ventana para que
+    # fill_between_pivots() pueda rellenar desde el borde izquierdo.
+    #
+    # BUG CORREGIDO: si la ventana visible empieza JUSTO en la primera
+    # vela de un día nuevo (ej. el usuario se desplaza hasta dejar como
+    # primera vela visible el open del día 12), este pivote inicial
+    # tomaba ese día como "$ultimo_dia" desde el arranque, así que el
+    # bucle de abajo nunca detectaba el cambio de día (no hay una vela
+    # anterior *visible* con la que comparar) y la etiqueta de ese día
+    # jamás se generaba — el pivote se marcaba 'start' (no dibujable) en
+    # vez de 'day'. Esto explica por qué el número de día "a veces"
+    # desaparecía: dependía de que el cambio de día cayera exactamente
+    # en el borde izquierdo de la ventana visible.
+    #
+    # Para corregirlo, miramos la vela justo ANTERIOR a la ventana
+    # (fuera de lo visible, pero existente en los datos) para saber si
+    # el día ya había cambiado antes de $start. Si es así, el pivote
+    # inicial se marca como 'day' (dibujable) en vez de 'start'.
+    {
+        my $primera = $velas->[$start];
+        if ($primera) {
+            ($ultimo_dia) = ($primera->{time} // "") =~ /^(\d{4}-\d{2}-\d{2})/;
+            $ultimo_dia //= "";
 
-    $ultimo_dia_visto = "";
-    
-    # FASE 2: Construir etiquetas ancladas a la vela real (Permite paneo fluido)
-    for my $i ($start .. $end) {
-        my $vela = $velas->[$i];
-        last unless $vela;
-        my $ts = $vela->{time} || "";
-        my ($dia_actual) = $ts =~ /^(\d{4}-\d{2}-\d{2})/;
-        $dia_actual //= "";
-        $ultimo_dia_visto = $dia_actual if $dia_actual;
-
-        # Si es un cambio de día, lo dibujamos siempre (en negrita en el PricePanel)
-        if ($cambios_de_dia{$i}) {
-            push @etiquetas_visibles, {
-                indice_relativo => $i - $start, 
-                timestamp       => $ts,
-                es_cambio_dia   => 1
-            };
-        } 
-        # Si es una etiqueta normal de minutos
-        elsif ($i % $salto == 0) {
-            # Evitar solapamiento: No dibujar si hay un cambio de día muy cerca
-            my $colision = 0;
-            my $tolerancia = int($salto * 0.25); # 25% de tolerancia de colisión
-            $tolerancia = 1 if $tolerancia < 1;
-            
-            for my $j ($i - $tolerancia .. $i + $tolerancia) {
-                if ($cambios_de_dia{$j}) {
-                    $colision = 1;
-                    last;
+            my $es_cambio_de_dia_en_el_borde = 0;
+            if ($start > 0) {
+                my $anterior = $velas->[$start - 1];
+                if ($anterior) {
+                    my ($dia_anterior) = ($anterior->{time} // "") =~ /^(\d{4}-\d{2}-\d{2})/;
+                    $es_cambio_de_dia_en_el_borde = 1
+                        if defined $dia_anterior && $dia_anterior ne "" && $dia_anterior ne $ultimo_dia;
                 }
             }
 
-            if (!$colision) {
-                push @etiquetas_visibles, {
-                    indice_relativo => $i - $start, 
-                    timestamp       => $ts,
-                    es_cambio_dia   => 0
-                };
-            }
+            push @pivots, {
+                indice_absoluto => $start,
+                indice_relativo => 0,
+                timestamp       => $primera->{time} // "",
+                type            => $es_cambio_de_dia_en_el_borde ? 'day' : 'start',
+            };
         }
     }
 
-    return \@etiquetas_visibles;
+    for my $i ($start + 1 .. $end) {
+        my $vela = $velas->[$i];
+        next unless $vela;
+        my $ts = $vela->{time} // "";
+        my ($dia) = $ts =~ /^(\d{4}-\d{2}-\d{2})/;
+        $dia //= "";
+
+        if ($dia ne $ultimo_dia && $ultimo_dia ne "") {
+            push @pivots, {
+                indice_absoluto => $i,
+                indice_relativo => $i - $start,
+                timestamp       => $ts,
+                type            => 'day',
+            };
+        }
+        $ultimo_dia = $dia if $dia;
+    }
+
+    # Pivote sintético al final para cerrar el último intervalo. Al estar
+    # $end ya recortado a $max_idx, esto siempre corresponde a una vela
+    # real (la última vela visible, o la última vela de todo el
+    # histórico si la ventana se desplazó más allá de los datos).
+    {
+        my $ultima = $velas->[$end];
+        if ($ultima) {
+            push @pivots, {
+                indice_absoluto => $end,
+                indice_relativo => $end - $start,
+                timestamp       => $ultima->{time} // "",
+                type            => 'end',    # marcador interno, no se dibuja
+            };
+        }
+    }
+
+    return \@pivots;
+}
+
+# -----------------------------------------------------------------------------
+# fill_between_pivots(\@pivots)
+#
+# Para cada par de pivotes consecutivos:
+#   1. Mide el espacio en píxeles disponible entre ellos.
+#   2. Elige el intervalo "bonito" más fino que quepa sin saturar, de entre
+#      un set reducido y limpio: 1 día, 3 h, 1 h 30, 1 h, 30 min, 15 min,
+#      5 min, 1 min (igual que TradingView).
+#   3. Genera etiquetas horarias (type => 'hour') en los timestamps exactos.
+# Devuelve la lista completa (pivotes dibujables + relleno), ordenada por x.
+# -----------------------------------------------------------------------------
+sub fill_between_pivots {
+    my ($self, $pivots) = @_;
+    return [] unless $pivots && @$pivots >= 2;
+
+    my ($start, $end) = $self->compute_window();
+    my $velas         = $self->{market_data}->get_data();
+    my $scale         = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
+
+    # Sin escala todavía (primer render) devolvemos sólo los pivotes reales
+    unless ($scale) {
+        return [ grep { $_->{type} eq 'day' } @$pivots ];
+    }
+
+    my $has_day = grep { $_->{type} eq 'day' } @$pivots;
+
+    unless ($has_day) {
+        $pivots->[0]{type}  = 'hour';
+        $pivots->[-1]{type} = 'hour';
+    }
+
+    # Pasos "bonitos" en minutos, de más fino a más grueso. Este conjunto
+    # reducido evita pasos "raros" (7, 9, 20 min...) y usa únicamente
+    # intervalos que un trader reconoce al vuelo, igual que TradingView:
+    # 1 min, 5 min, 15 min, 30 min, 1 h, 1 h 30, 3 h, 1 día.
+    my @steps = (1, 5, 15, 30, 60, 90, 180, 1440);
+
+    # Espacio mínimo entre etiquetas en píxeles. Debe reflejar el ancho
+    # REAL que ocupa una etiqueta de tiempo renderizada (mismo criterio
+    # que usa remove_overlaps(): "HH:MM" son 5 caracteres × 8px + 12px de
+    # margen = 52px; redondeamos a 60px de margen de seguridad).
+    #
+    # Con un valor de 1px (el anterior) esta comprobación no filtraba
+    # casi nada, así que casi siempre se elegía el paso más fino posible
+    # (1 minuto) y se generaba una etiqueta por cada vela del intervalo.
+    # remove_overlaps() terminaba recortando ese exceso según el espacio
+    # en pantalla, pero al filtrar por posición X en vez de por minutos
+    # "bonitos" el resultado eran horas arbitrarias (02:24, 04:48, ...)
+    # en vez de marcas limpias (03:00, 06:00, ...). Al usar aquí el
+    # ancho real, el paso "bonito" correcto (1h, 3h, 1 día, etc.) se
+    # elige desde el principio y remove_overlaps() sólo actúa como red
+    # de seguridad ante casos límite, no como filtro principal.
+    my $min_spacing = 45;
+
+    my @result;
+
+    for my $k (0 .. $#$pivots - 1) {
+        my $p1 = $pivots->[$k];
+        my $p2 = $pivots->[$k + 1];
+
+        # Añadir el pivote p1 si es dibujable (day)
+        push @result, $p1 if $p1->{type} ne 'start';
+
+        my $x1 = $scale->index_to_center_x($p1->{indice_absoluto});
+        my $x2 = $scale->index_to_center_x($p2->{indice_absoluto});
+        my $pixel_distance = $x2 - $x1;
+
+        next if $pixel_distance <= 0;
+
+        # ¿Cuántas etiquetas intermedias caben?
+        my $max_labels = int($pixel_distance / $min_spacing);
+        next if $max_labels < 1;
+
+        # Elegir el menor paso que produzca <= max_labels etiquetas.
+        # Para estimarlo necesitamos cuántos minutos "reales" hay entre los
+        # pivotes.
+        #
+        # BUG CORREGIDO: antes se usaba _ts_diff_minutes() para calcular la
+        # diferencia de CALENDARIO entre los dos timestamps. Eso se rompe en
+        # cuanto hay un hueco real en los datos (fin de semana, sesión de
+        # mercado cerrada, feriado): p.ej. el viernes cierra a las 15:59 y
+        # el domingo reabre a las 17:00 — calendario dice "~1650 minutos de
+        # diferencia", pero en realidad solo hay ~159 velas reales en ese
+        # tramo. Con ese span inflado se elegía un paso demasiado grueso
+        # (90 min) y sólo sobrevivía UNA etiqueta suelta en vez de la serie
+        # completa cada 15 min.
+        #
+        # La cantidad de velas REALES entre los pivotes (indice_absoluto)
+        # es siempre la medida correcta del espacio de tiempo "denso" que
+        # hay que repartir en píxeles, sin importar los huecos de calendario
+        # que haya por fuera. La multiplicamos por la duración de cada vela
+        # según la temporalidad activa para obtener minutos.
+        my $bar_minutes  = $self->_bar_minutes();
+        my $index_span   = $p2->{indice_absoluto} - $p1->{indice_absoluto};
+        my $minutos_span = $index_span * $bar_minutes;
+        next if $minutos_span <= 0;
+
+        my $chosen_step = undef;
+        for my $step (@steps) {
+            my $estimated = int($minutos_span / $step);
+            if ($estimated <= $max_labels) {
+                $chosen_step = $step;
+                last;
+            }
+        }
+        next unless defined $chosen_step;
+
+        # Generar etiquetas intermedias recorriendo las velas del intervalo
+        for my $i ($p1->{indice_absoluto} + 1 .. $p2->{indice_absoluto} - 1) {
+            my $vela = $velas->[$i];
+            next unless $vela;
+            my $ts = $vela->{time} // "";
+
+            # Extraer hora y minuto
+            my ($h, $m) = $ts =~ /[T ](\d{2}):(\d{2})/;
+            next unless defined $h && defined $m;
+
+            my $total_min = $h * 60 + $m;
+
+            # ¿Cae exactamente en un múltiplo del paso elegido?
+            next unless $total_min % $chosen_step == 0;
+
+            push @result, {
+                indice_absoluto => $i,
+                indice_relativo => $i - $start,
+                timestamp       => $ts,
+                type            => 'hour',
+            };
+        }
+    }
+
+    # Añadir el último pivote. El pivote final es siempre sintético
+    # (type => 'end', "marcador interno") porque se genera para poder
+    # calcular el relleno del último intervalo, pero su timestamp SÍ
+    # corresponde a una vela real (la última visible) y por tanto debe
+    # dibujarse igualmente; de lo contrario la etiqueta de tiempo del
+    # borde derecho del gráfico nunca aparece en pantalla. Lo
+    # convertimos a tipo 'hour' para que se renderice como el resto de
+    # etiquetas horarias.
+    my $last = $pivots->[-1];
+    if ($last) {
+        if ($last->{type} eq 'end') {
+            push @result, { %$last, type => 'hour' };
+        }
+        else {
+            push @result, $last;
+        }
+    }
+
+    # Ordenar por posición
+    @result = sort { $a->{indice_absoluto} <=> $b->{indice_absoluto} } @result;
+
+    return \@result;
+}
+
+# -----------------------------------------------------------------------------
+# label_display_text($lbl)
+#
+# Devuelve el texto CORTO que realmente se dibuja para una etiqueta del eje
+# de tiempo: el número de día para los pivotes 'day' (ej. "9"), o "HH:MM"
+# para el resto. Debe ser la ÚNICA fuente de verdad para ese texto, usada
+# tanto para medir anchos reales (remove_overlaps) como para dibujar
+# (PricePanel::draw_time_axis) — así ambos sitios están siempre de acuerdo.
+# -----------------------------------------------------------------------------
+sub label_display_text {
+    my ($self, $lbl) = @_;
+    my $texto = $lbl->{timestamp} // "";
+
+    if ($lbl->{type} && $lbl->{type} eq 'day' && $texto =~ /^\d{4}-\d{2}-(\d{2})/) {
+        return "" . int($1);
+    }
+
+    my ($hora) = $texto =~ /T?(\d{2}:\d{2})/;
+    return defined $hora ? $hora : $texto;
+}
+
+# -----------------------------------------------------------------------------
+# remove_overlaps(\@labels)
+#
+# Descarta etiquetas cuya posición X esté demasiado cerca de la anterior.
+# La anchura de cada texto se estima sobre el texto REALMENTE dibujado
+# (label_display_text): caracteres × 8 px + margen 12 px. Antes se medía
+# la longitud del timestamp completo ("2026-07-09 00:00:00", 19
+# caracteres) en vez del "9" que se ve en pantalla, lo que sobreestimaba
+# muchísimo el ancho de los pivotes de día y descartaba etiquetas de más
+# — sobre todo notorio al hacer zoom out, donde predominan los pivotes
+# de día muy próximos entre sí en píxeles.
+# Los pivotes 'day' tienen prioridad: si colisionan con una 'hour' anterior,
+# es la 'hour' la que se elimina (ya se hizo).  Si colisionan entre sí,
+# se mantiene la primera que apareció.
+# -----------------------------------------------------------------------------
+sub remove_overlaps {
+    my ($self, $labels) = @_;
+    return $labels unless $labels && @$labels;
+
+    my $scale = $self->{price_panel} ? $self->{price_panel}->{scale} : undef;
+    return $labels unless $scale;
+
+    my @kept;
+    my $last_x_right = -9999;   # borde derecho de la última etiqueta aceptada
+
+    for my $lbl (@$labels) {
+        my $x = $scale->index_to_center_x($lbl->{indice_absoluto});
+
+        # Estimar anchura del texto REALMENTE dibujado
+        my $text  = $self->label_display_text($lbl);
+        my $chars = length($text) > 0 ? length($text) : 5;
+        my $ancho = $chars * 8 + 12;     # 8 px/carácter + 12 px de margen
+        my $x_left  = $x - int($ancho / 2);
+        my $x_right = $x + int($ancho / 2);
+
+
+        if ($x_left > $last_x_right) {
+            push @kept, $lbl;
+            $last_x_right = $x_right;
+        }
+        # Si colisiona pero es 'day', reemplaza la anterior si ésta era 'hour'
+        elsif ($lbl->{type} eq 'day' && @kept && $kept[-1]{type} eq 'hour') {
+            pop @kept;
+            push @kept, $lbl;
+            $last_x_right = $x_right;
+        }
+        # En cualquier otro caso de colisión se descarta silenciosamente
+    }
+
+    return \@kept;
+}
+
+# -----------------------------------------------------------------------------
+# _bar_minutes()
+#
+# Duración en minutos de cada vela según la temporalidad activa del
+# gráfico (usa el mismo mapa %BLOCK_MINUTES que Market::MarketData).
+# Por defecto asume 1 minuto (temporalidad '1m') si no se puede determinar.
+# -----------------------------------------------------------------------------
+sub _bar_minutes {
+    my ($self) = @_;
+    my $tf = $self->{market_data} ? ($self->{market_data}->{timeframe} // '1m') : '1m';
+    return $Market::MarketData::BLOCK_MINUTES{$tf} || 1;
+}
+
+# -----------------------------------------------------------------------------
+# _ts_diff_minutes($ts1, $ts2)
+#
+# Diferencia en minutos entre dos timestamps ISO-8601 / "YYYY-MM-DD HH:MM".
+# Solo toma en cuenta hora y minuto dentro del mismo día para rapidez;
+# si cruzan medianoche devuelve la suma de minutos restantes + los del nuevo.
+# Para el propósito de elegir el step esto es suficientemente preciso.
+# -----------------------------------------------------------------------------
+sub _ts_diff_minutes {
+    my ($self, $ts1, $ts2) = @_;
+
+    my ($d1, $h1, $m1) = $ts1 =~ /(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})/;
+    my ($d2, $h2, $m2) = $ts2 =~ /(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})/;
+
+    return 0 unless defined $h1 && defined $h2;
+
+    my $min1 = $h1 * 60 + $m1;
+    my $min2 = $h2 * 60 + $m2;
+
+    if ($d1 eq $d2) {
+        return abs($min2 - $min1);
+    }
+    else {
+        # Cruza medianoche: minutos restantes del día 1 + minutos del día 2
+        return (1440 - $min1) + $min2;
+    }
 }
 
 sub vertical_zoom {
@@ -494,6 +2340,20 @@ sub vertical_zoom {
 sub set_timeframe {
     my ($self, $tf) = @_;
     $self->{market_data}->set_timeframe($tf) if $self->{market_data} && $self->{market_data}->can('set_timeframe');
+
+    # El ATR incremental sólo conoce la última vela agregada; al cambiar de
+    # temporalidad hace falta recalcular la serie completa para que la nueva
+    # cantidad de velas quede correctamente indexada. Esto es indispensable
+    # para que Liquidez y SMC (que dependen del ATR por índice) sigan siendo
+    # coherentes en 1m/5m/15m.
+    if ($self->{indicator_manager} && $self->{indicator_manager}->can('recompute_all')) {
+        $self->{indicator_manager}->recompute_all($self->{market_data});
+    }
+
+    # Invalidamos el caché de Liquidez/SMC para forzar su recálculo con la
+    # nueva serie de velas y de ATR.
+    $self->{smc_cache_key} = undef;
+
     $self->reset_view(); 
 }
 
@@ -651,12 +2511,11 @@ sub set_auto_scale {
     $self->{auto_scale} = $mode;
     $self->{atr_auto_scale} = $mode;
 
-    # Actualizamos la estética del botón de la interfaz
-    if (my $btn = $self->{widgets}->{scale_btn}) {
-        $btn->configure(
-            -text => $mode ? "Escala: Auto" : "Escala: Manual",
-            -fg   => $mode ? '#3bb3e4' : '#ff9800'
-        );
+    # Sincronizamos la casilla "Escala Automática" del menú Configuración
+    # con el nuevo estado, aunque el cambio se haya originado en otro lugar
+    # (por ejemplo al Restablecer Vista), para que nunca quede desfasada.
+    if (my $var_ref = $self->{widgets}->{auto_scale_var}) {
+        $$var_ref = $mode;
     }
 }
 

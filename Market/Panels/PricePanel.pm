@@ -119,7 +119,8 @@ sub render {
     
     $self->draw_time_axis();
     $self->_init_crosshair_objects();
-    $self->render_last_visible_price($data_slice, $scale);
+    $self->render_last_visible_price($data_slice, $scale)
+        if !defined $self->{engine}->{show_last_price} || $self->{engine}->{show_last_price};
 }
 
 sub _init_crosshair_objects {
@@ -244,23 +245,14 @@ sub draw_time_axis {
         my $absolute_index = $start_index + $pos_relativa;
         my $x = $scale->index_to_center_x($absolute_index);
         
-        my $texto = $etiqueta->{timestamp};
-        my ($hora) = $texto =~ /T?(\d{2}:\d{2})/;
-        $hora //= $texto; 
+        my $hora = $self->{engine}->label_display_text($etiqueta);
 
         my $color_texto = '#4b4b4c';
         my $font_weight = 'normal';
         
-        if ($etiqueta->{es_cambio_dia}) {
+        if ($etiqueta->{type} && $etiqueta->{type} eq 'day') {
             $color_texto = '#000000';
             $font_weight = 'bold';
-            
-            # --- ¡AQUÍ ESTÁ LA MAGIA! ---
-            # Extraemos solo el día (los dos últimos dígitos de la fecha YYYY-MM-DD)
-            if ($texto =~ /^\d{4}-\d{2}-(\d{2})/) {
-                $hora = int($1); # int() quita el cero a la izquierda (ej: "05" -> "5")
-            }
-            
         }
         
         $time_cv->createText(

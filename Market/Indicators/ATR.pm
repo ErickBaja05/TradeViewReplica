@@ -95,6 +95,65 @@ sub get_values
     return $self->{values};
 }
 
+# Recalcula la serie completa de ATR desde cero para la temporalidad
+# actualmente activa en $market_data. Es necesario porque el cálculo
+# incremental de update_last() sólo conoce la última vela agregada, y al
+# cambiar de temporalidad (1m/5m/15m) el historial completo debe rehacerse
+# para que los indicadores derivados (Liquidez, SMC) trabajen con una serie
+# de ATR coherente con la nueva cantidad de velas.
+sub recompute_all
+{
+    my ($self, $market_data) = @_;
+    return unless $market_data;
+
+    $self->reset();
+
+    my $last_index = $market_data->last_index();
+    return if $last_index < 0;
+
+    my $data = $market_data->get_slice(0, $last_index);
+    my $period = $self->{period};
+
+    my @tr;
+
+    for my $i (0 .. $#$data) {
+        my $candle = $data->[$i];
+        my $tr;
+
+        if ($i == 0) {
+            $tr = $candle->{high} - $candle->{low};
+        } else {
+            my $prev_close = $data->[$i - 1]->{close};
+            my $highlow    = $candle->{high} - $candle->{low};
+            my $highclose  = abs($candle->{high} - $prev_close);
+            my $lowclose   = abs($candle->{low}  - $prev_close);
+
+            $tr = $highlow;
+            $tr = $highclose if $highclose > $tr;
+            $tr = $lowclose  if $lowclose  > $tr;
+        }
+
+        push @tr, $tr;
+
+        if ($i < $period - 1) {
+            push @{$self->{values}}, undef;
+        } elsif ($i == $period - 1) {
+            my $sum = 0;
+            $sum += $_ for @tr[0 .. $period - 1];
+            my $first_atr = $sum / $period;
+            push @{$self->{values}}, $first_atr;
+            $self->{last_atr} = $first_atr;
+        } else {
+            my $atr = ($self->{last_atr} * ($period - 1) + $tr) / $period;
+            push @{$self->{values}}, $atr;
+            $self->{last_atr} = $atr;
+        }
+    }
+
+    $self->{prev_close}   = $data->[-1]->{close};
+    $self->{wilder_phase} = 1;
+}
+
 # Reinicia el indicador
 sub reset
 {
