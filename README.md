@@ -4,8 +4,8 @@ Disclaimer: This repository is a student-built technical replica inspired by Tra
 
 Developers:
 
-Erick Bajaña
-Ricardo Garzón
-Doménica Astudillo
-Josue Carcelén
+- Erick Bajaña
+- Ricardo Garzón
+- Doménica Astudillo
+- Josué Carcelén
 
